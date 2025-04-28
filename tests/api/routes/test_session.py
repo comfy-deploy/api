@@ -50,6 +50,64 @@ async def test_session_for_paid_user(
         assert delete_response.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_heavy_machine_session_1_for_paid_user(
+    app, paid_user, test_heavy_serverless_machine_1
+):
+    
+    machine_id = test_heavy_serverless_machine_1
+
+    async with get_test_client(app, paid_user) as client:
+        session_response = await client.post(
+            "/session", json={"machine_id": machine_id, "wait_for_server": True}
+        )
+        assert session_response.status_code == 200
+
+        session_id = session_response.json()["session_id"]
+
+        timeout_response = await client.post("/session/increase-timeout",
+                                             json={"timeout": 20, 
+                                                   "machine_id": machine_id,
+                                                   "session_id": session_id,
+                                                   "gpu": "CPU"}
+                                            )
+
+        assert timeout_response.status_code == 200
+        
+        delete_response = await client.delete(f"/session/{session_id}")
+
+        assert delete_response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_heavy_machine_session_2_for_paid_user(
+    app, paid_user, test_heavy_serverless_machine_2
+):
+    
+    machine_id = test_heavy_serverless_machine_2
+
+    async with get_test_client(app, paid_user) as client:
+        session_response = await client.post(
+            "/session", json={"machine_id": machine_id, "wait_for_server": True}
+        )
+        assert session_response.status_code == 200
+
+        session_id = session_response.json()["session_id"]
+
+        timeout_response = await client.post("/session/increase-timeout",
+                                             json={"timeout": 20, 
+                                                   "machine_id": machine_id,
+                                                   "session_id": session_id,
+                                                   "gpu": "CPU"}
+                                            )
+
+        assert timeout_response.status_code == 200
+        
+        delete_response = await client.delete(f"/session/{session_id}")
+
+        assert delete_response.status_code == 200
+
+
 '''
 @pytest.mark.asyncio
 async def test_free_user_session_timeout_limit(app, test_free_user, test_serverless_machine_free_user):
