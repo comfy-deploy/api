@@ -453,7 +453,7 @@ heavy_machine_1_data = {
 heavy_machine_2_data = {
     "name": "Heavy Machine 2",
     "type": "comfy-deploy-serverless",
-    "gpu": "CPU",
+    "gpu": "A100",
     "wait_for_build": True,
     "machine_builder_version": "4",
     "allow_concurrent_inputs": 1,
@@ -1806,6 +1806,39 @@ async def paid_user_2():
     yield user
 
 
+@pytest_asyncio.fixture(scope="session")
+async def paid_user_3():
+    user_id = str(uuid4())
+
+    redis = Redis(url=redis_url, token=redis_token)
+    data = {
+        "data": {
+            "plans": ["enterprise_monthly"],
+            "names": [],
+            "prices": [],
+            "amount": [],
+            "charges": [],
+            "cancel_at_period_end": False,
+            "canceled_at": None,
+            "payment_issue": False,
+            "payment_issue_reason": "",
+        },
+        "version": "1.0",
+        "timestamp": int(datetime.now().timestamp()),
+    }
+    redis.set(f"plan:{user_id}", json.dumps(data))
+    print("redis set", redis.get(f"plan:{user_id}"))
+
+    async with get_db_context() as db:
+        user = User(
+            id=user_id,
+            username="enterprise_user",
+            name="Enterprise User",
+        )
+        db.add(user)
+    yield user
+
+
 
 @pytest_asyncio.fixture(scope="session")
 async def free_user():
@@ -1911,9 +1944,9 @@ async def test_heavy_serverless_machine_1(app, paid_user):
 
 
 @pytest_asyncio.fixture(scope="session")
-async def test_heavy_serverless_machine_2(app, paid_user):
+async def test_heavy_serverless_machine_2(app, paid_user_3):
 
-    async with get_test_client(app, paid_user) as client:
+    async with get_test_client(app, paid_user_3) as client:
         response = await client.post("/machine/serverless", json=heavy_machine_2_data)
         assert response.status_code == 200
         machine_id = response.json()["id"]

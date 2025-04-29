@@ -81,12 +81,12 @@ async def test_heavy_machine_session_1_for_paid_user(
 
 @pytest.mark.asyncio
 async def test_heavy_machine_session_2_for_paid_user(
-    app, paid_user, test_heavy_serverless_machine_2
+    app, paid_user_3, test_heavy_serverless_machine_2
 ):
     
     machine_id = test_heavy_serverless_machine_2
 
-    async with get_test_client(app, paid_user) as client:
+    async with get_test_client(app, paid_user_3) as client:
         session_response = await client.post(
             "/session", json={"machine_id": machine_id, "wait_for_server": True}
         )
@@ -98,7 +98,7 @@ async def test_heavy_machine_session_2_for_paid_user(
                                              json={"timeout": 20, 
                                                    "machine_id": machine_id,
                                                    "session_id": session_id,
-                                                   "gpu": "CPU"}
+                                                   "gpu": "A10G"}
                                             )
 
         assert timeout_response.status_code == 200
