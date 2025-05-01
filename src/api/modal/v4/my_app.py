@@ -2176,64 +2176,41 @@ class _ComfyDeployRunner(BaseComfyDeployRunner):
 
     @modal.enter(snap=False)
     async def launch_comfy_background(self):
-        await self.handle_container_enter_before_comfy()
-        await self.handle_container_enter()
+        try:
+            await self.handle_container_enter_before_comfy()
+            await self.handle_container_enter()
 
-        t = time.time()
-        import torch
+            t = time.time()
+            import torch
+            self.loading_time["import_torch"] = time.time() - t
 
-        self.loading_time["import_torch"] = time.time() - t
+            print(f"GPUs available: {torch.cuda.is_available()}")
+            self.start_time = time.time()
+            print("Launching ComfyUI")
 
-        # if self.load_workflow_path is not None and self.workflow_api_raw is None:
-        #     self.workflow_api_raw = (Path(self.load_workflow_path)).read_text()
+            self.load_args()
+            await self.start_native_comfy_server()
 
-        # print(f"Time to import torch: {time.time() - t:.2f} seconds")
-        print(f"GPUs available: {torch.cuda.is_available()}")
+            async for event in wait_for_server():
+                pass
 
-        self.start_time = time.time()
-        print("Launching ComfyUI")
-
-        self.load_args()
-        await self.start_native_comfy_server()
-
-        async for event in wait_for_server():
-            # print(event)
-            pass
-
-        from comfy_execution.graph import (
-            get_input_info,
-            ExecutionList,
-            DynamicPrompt,
-            ExecutionBlocker,
-        )
-        from execution import IsChangedCache
-
-        t = time.time()
-        # prompt = json.loads(self.workflow_api_raw)
-        # dynamic_prompt = DynamicPrompt(prompt)
-        # is_changed_cache = IsChangedCache(
-        #     dynamic_prompt, self.prompt_executor.caches.outputs
-        # )
-        # for cache in self.prompt_executor.caches.all:
-        #     cache.set_prompt(dynamic_prompt, prompt.keys(), is_changed_cache)
-        #     cache.clean_unused()
-        # for node in self.config.nodes_to_preload:
-        #     await preload_node(node, self.workflow_api_raw, self.prompt_executor)
-        self.loading_time["preload_nodes"] = time.time() - t
-
-        # workflow_start_time = time.perf_counter()
-        # if self.config.warmup_workflow:
-        #     input = Input(
-        #         inputs={},
-        #         workflow_api_raw=self.workflow_api_raw,
-        #         prompt_id=str(uuid.uuid4()),
-        #     )
-        #     await queue_workflow(input)
-        #     await wait_for_completion(input.prompt_id)
-        #     workflow_end_time = time.perf_counter()
-        # self.loading_time["warmup_workflow_runtime"] = (
-        #     workflow_end_time - workflow_start_time
-        # )
+            from comfy_execution.graph import (
+                get_input_info,
+                ExecutionList,
+                DynamicPrompt,
+                ExecutionBlocker,
+            )
+            from execution import IsChangedCache
+            
+            t = time.time()
+            self.loading_time["preload_nodes"] = time.time() - t
+        except Exception as e:
+            import traceback
+            print(f"CONTAINER STARTUP ERROR: {e}")
+            print(traceback.format_exc())
+            # Optionally log to some external service or file
+            # Force container to exit with error
+            raise
 
     def load_args(self):
         from comfy.cli_args import args
@@ -2257,10 +2234,16 @@ class _ComfyDeployRunner(BaseComfyDeployRunner):
 
     @modal.exit()
     async def exit(self):
-        print("Exiting ComfyUI")
-        root_logger = logging.getLogger()
-        root_logger.removeHandler(self.log_handler)
-        await self.handle_container_exit()
+        try:
+            print("Exiting ComfyUI")
+            root_logger = logging.getLogger()
+            root_logger.removeHandler(self.log_handler)
+            await self.handle_container_exit()
+        except Exception as e:
+            import traceback
+            print(f"CONTAINER EXIT ERROR: {e}")
+            print(traceback.format_exc())
+            # Still try to exit gracefully even if there was an error
 
 
 class _ComfyDeployRunnerOptimizedImports(_ComfyDeployRunner):
@@ -2464,25 +2447,32 @@ async def get_file_tree(path="/"):
 class ComfyDeployRunner(BaseComfyDeployRunner):
     @enter()
     async def setup(self):
-        await self.handle_container_enter_before_comfy()
+        try:
+            await self.handle_container_enter_before_comfy()
 
-        self.server_process = await asyncio.subprocess.create_subprocess_shell(
-            comfyui_cmd(mountIO=self.mountIO, cpu=self.gpu == "CPU"),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd="/comfyui",
-        )
+            self.server_process = await asyncio.subprocess.create_subprocess_shell(
+                comfyui_cmd(mountIO=self.mountIO, cpu=self.gpu == "CPU"),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd="/comfyui",
+            )
 
-        self.stdout_task = asyncio.create_task(
-            self.read_stream(self.server_process.stdout, False)
-        )
-        self.stderr_task = asyncio.create_task(
-            self.read_stream(self.server_process.stderr, True)
-        )
+            self.stdout_task = asyncio.create_task(
+                self.read_stream(self.server_process.stdout, False)
+            )
+            self.stderr_task = asyncio.create_task(
+                self.read_stream(self.server_process.stderr, True)
+            )
 
-        print("setting up log queue 2")
+            print("setting up log queue 2")
 
-        await self.handle_container_enter()
+            await self.handle_container_enter()
+        except Exception as e:
+            import traceback
+            print(f"CONTAINER SETUP ERROR: {e}")
+            print(traceback.format_exc())
+            # Optionally send error to an external monitoring service
+            raise
 
     @exit()
     async def cleanup(self):
