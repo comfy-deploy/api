@@ -43,9 +43,13 @@ async def get_workflows(
     search: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
+    user_ids: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    raw_query = text("""
+    # Base query with conditional user_ids filter
+    user_filter = "AND wf.user_id = ANY(:user_ids)" if user_ids else ""
+    
+    raw_query = text(f"""
     WITH RECURSIVE search_param(term) AS (
         SELECT lower(:search)
     )
@@ -66,6 +70,7 @@ async def get_workflows(
         wf.deleted = false AND ((CAST(:org_id AS TEXT) IS NOT NULL AND wf.org_id = CAST(:org_id AS TEXT))
             OR (CAST(:org_id AS TEXT) IS NULL AND org_id IS NULL AND wf.user_id = CAST(:user_id AS TEXT)))
             AND (CAST(:search AS TEXT) IS NULL OR lower(wf.name) LIKE '%' || (SELECT term FROM search_param) || '%')
+            {user_filter}
     ORDER BY 
         wf.pinned DESC,
         wf.updated_at DESC
@@ -77,17 +82,21 @@ async def get_workflows(
     user_id = current_user["user_id"]
     org_id = current_user["org_id"] if "org_id" in current_user else None
 
+    # Prepare parameters
+    params = {
+        "search": search,
+        "limit": limit,
+        "offset": offset,
+        "org_id": org_id,
+        "user_id": user_id,
+    }
+    
+    # Only add user_ids to params if it's provided
+    if user_ids:
+        params["user_ids"] = user_ids.split(',')
+
     # Execute the query
-    result = await db.execute(
-        raw_query,
-        {
-            "search": search,
-            "limit": limit,
-            "offset": offset,
-            "org_id": org_id,
-            "user_id": user_id,
-        },
-    )
+    result = await db.execute(raw_query, params)
 
     workflows = [dict(row._mapping) for row in result.fetchall()]
 

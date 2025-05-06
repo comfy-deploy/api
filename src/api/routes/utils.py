@@ -441,10 +441,6 @@ async def update_user_settings(request: Request, db: AsyncSession, body: any):
     
     secret_manager = SecretManager()
 
-    if "s3_secret_access_key" in update_data:
-        user_settings.encrypted_s3_key = secret_manager.encrypt_value(update_data["s3_secret_access_key"])
-        update_data["s3_secret_access_key"] = None
-
     if user_settings is None:
         # Create new settings if none exist
         org_id = request.state.current_user.get("org_id")
@@ -455,6 +451,9 @@ async def update_user_settings(request: Request, db: AsyncSession, body: any):
 
         db.add(user_settings)
     
+    if "s3_secret_access_key" in update_data:
+        user_settings.encrypted_s3_key = secret_manager.encrypt_value(update_data["s3_secret_access_key"])
+        update_data["s3_secret_access_key"] = None
     # Update fields in the database
     # This uses SQLAlchemy's setattr to update the model attributes
     for key, value in update_data.items():

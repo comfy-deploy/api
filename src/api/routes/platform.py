@@ -1636,26 +1636,31 @@ async def get_monthly_invoices(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get monthly invoices for the current user/org"""
     user_id = request.state.current_user.get("user_id")
     org_id = request.state.current_user.get("org_id")
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # Get current plan to get subscription ID
-    current_plan = await get_current_plan(db, user_id, org_id)
-    if not current_plan or not current_plan.get("subscription_id"):
+    # Use the new Autumn-based cache directly
+    plan_data = await get_customer_plan_cached_5_seconds(org_id or user_id)
+    subscription_id = plan_data.get("subscription_id") if plan_data else None
+    # Fallback: try to extract from autumn_data if not present
+    if not subscription_id and plan_data and plan_data.get("autumn_data"):
+        products = plan_data["autumn_data"].get("products", [])
+        if products and products[0].get("subscription_ids"):
+            subscription_ids = products[0]["subscription_ids"]
+            if subscription_ids:
+                subscription_id = subscription_ids[0]
+    if not subscription_id:
         return []
 
     try:
-        # Fetch invoices from Stripe
         invoices = await stripe.Invoice.list_async(
-            subscription=current_plan["subscription_id"],
+            subscription=subscription_id,
             limit=12,
             expand=["data.lines"],
         )
-
         # Transform invoice data
         return [
             {
@@ -2012,6 +2017,15 @@ async def get_customer_plan_v2(
             if invoice.get("status") == "paid":
                 charges.append(invoice.get("total", 0))
 
+    # --- Stripe ID Extraction from Autumn ---
+    stripe_customer_id = autumn_data.get("stripe_id")
+    stripe_subscription_id = None
+    products = autumn_data.get("products", [])
+    if products and products[0].get("subscription_ids"):
+        # Use the first subscription_id from the first product
+        stripe_subscription_id = products[0]["subscription_ids"][0]
+    # --- End Stripe ID Extraction ---
+
     # Create the transformed data structure
     transformed_data = {
         "plans": plans,
@@ -2026,7 +2040,10 @@ async def get_customer_plan_v2(
         "autumn_data": autumn_data,  # Keep the original data for reference
         "last_invoice_timestamp": get_last_invoice_timestamp_from_autumn(autumn_data),
         "source": "autumn",
-        "last_update": int(datetime.now().timestamp())
+        "last_update": int(datetime.now().timestamp()),
+        # --- Stripe IDs for downstream use ---
+        "stripe_customer_id": stripe_customer_id,
+        "subscription_id": stripe_subscription_id,
     }
 
     # try:

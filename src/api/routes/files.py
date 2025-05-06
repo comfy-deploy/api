@@ -2,12 +2,13 @@ from enum import Enum
 import os
 from api.models import Asset
 from api.utils.storage_helper import get_s3_config
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Body
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from .utils import (
     get_temporary_download_url,
     get_user_settings,
+    generate_presigned_url,
 )
 
 # from sqlalchemy import select
@@ -39,6 +40,19 @@ prefixes = {
     "file": "file",
     "folder": "folder"
 }
+
+
+def get_id_prefix_from_type(mime_type: str):
+    if mime_type.startswith("video/"):
+        return "vid"
+    elif mime_type.startswith("audio/"):
+        return "audio"
+    elif mime_type.startswith("image/"):
+        return "img"
+    elif mime_type.startswith("application/zip"):
+        return "zip"
+    else:
+        return "file"
 
 
 def new_id(prefix):
@@ -431,13 +445,91 @@ async def upload_asset_file(
             raise HTTPException(status_code=500, detail="Error uploading file")
 
 
+@router.get("/assets/presigned-url")
+async def get_asset_upload_url(
+    request: Request,
+    file_name: str = Query(..., description="Name of the file to upload"),
+    parent_path: str = Query(default="/", description="Parent folder path"),
+    size: Optional[int] = Query(None, description="Size of the file in bytes"),
+    type: str = Query(..., description="Content type of the file"),
+    db: AsyncSession = Depends(get_db),
+):
+    s3_config = await get_s3_config(request, db)
+    public = s3_config.public
+    
+    # Generate object key
+    file_extension = os.path.splitext(file_name)[1]
+    file_id = new_id(get_id_prefix_from_type(type))
+    
+    object_key = os.path.join("assets", parent_path.lstrip("/"), f"{file_id}{file_extension}").replace("\\", "/")
+    db_file_path = os.path.join(parent_path.lstrip("/"), f"{file_id}{file_extension}").replace("\\", "/")
+    
+    composed_endpoint = f"https://{s3_config.bucket}.s3.{s3_config.region}.amazonaws.com"
+    download_url = f"{composed_endpoint}/{object_key}"
+    
+    # Generate pre-signed URL
+    upload_url = generate_presigned_url(
+        object_key=object_key,
+        expiration=3600,
+        http_method="PUT",
+        size=size,
+        content_type=type,
+        public=public,
+        bucket=s3_config.bucket,
+        region=s3_config.region,
+        access_key=s3_config.access_key,
+        secret_key=s3_config.secret_key,
+    )
+    
+    return {
+        "url": upload_url,
+        "download_url": download_url,
+        "file_id": file_id,
+        "db_path": db_file_path,
+        "is_public": public
+    }
+
+
+@router.post("/assets/register", response_model=AssetResponse)
+async def register_asset(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    file_id: str = Body(...),
+    file_name: str = Body(...),
+    file_size: int = Body(...),
+    db_path: str = Body(...),
+    url: str = Body(...),
+    mime_type: str = Body(...),
+):
+    user_id = request.state.current_user["user_id"]
+    org_id = request.state.current_user.get("org_id")
+    
+    new_asset = Asset(
+        user_id=user_id,
+        org_id=org_id,
+        id=file_id,
+        name=file_name,
+        is_folder=False,
+        path=db_path,
+        url=url,
+        mime_type=mime_type,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        file_size=file_size
+    )
+    
+    db.add(new_asset)
+    await db.commit()
+    await db.refresh(new_asset)
+    
+    return new_asset
+
 @router.get("/assets/{asset_id}", response_model=AssetResponse)
 async def get_asset(
     request: Request,
     asset_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    # Get the asset
     query = select(Asset).apply_org_check(request).where(Asset.id == asset_id)
     result = await db.execute(query)
     asset = result.scalar_one_or_none()
@@ -445,10 +537,8 @@ async def get_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     
-    # Get user settings for S3 configuration
     s3_config = await get_s3_config(request, db)
 
-    # Generate temporary URL for private files
     if s3_config and not s3_config.public and asset.url:
         asset.url = get_temporary_download_url(
             asset.url,
