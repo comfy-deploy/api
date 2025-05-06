@@ -117,7 +117,6 @@ async def upload_file(
     db: AsyncSession = Depends(get_db),
     file: UploadFile = File(...),
 ) -> FileUploadResponse:
-    # if not file_type:
     # Infer file type from the filename
     inferred_type, _ = mimetypes.guess_type(file.filename)
     file_type = (
@@ -129,12 +128,6 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Unsupported file type")
     
     s3_config = await get_s3_config(request, db)
-
-    public = s3_config.public
-    bucket = s3_config.bucket
-    region = s3_config.region
-    access_key = s3_config.access_key
-    secret_key = s3_config.secret_key
 
     # File size check
     file_size = file.size
@@ -157,69 +150,40 @@ async def upload_file(
     else:
         file_id = new_id("file")
 
-    # if upload_type == UploadType.OUTPUT and run_id:
-    #     file_path = f"outputs/runs/{run_id}/{file_id}{file_extension}"
-    # else:
     file_path = f"inputs/{file_id}{file_extension}"
 
-    async with aioboto3.Session().client(
-        "s3",
-        region_name=region,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=Config(signature_version="s3v4"),
-    ) as s3_client:
-        try:
-            file_content = await file.read()
-            await s3_client.put_object(
-                Bucket=bucket,
-                Key=file_path,
-                Body=file_content,
-                ACL="public-read" if public else "private",
-                ContentType=file_type,
-            )
+    try:
+        file_content = await file.read()
+        s3_result = await upload_file_to_s3(
+            file_content=file_content,
+            key=file_path,
+            content_type=file_type,
+            s3_config=s3_config,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"S3 upload failed: {str(e)}")
 
-            file_url = f"https://{bucket}.s3.{region}.amazonaws.com/{file_path}"
+    file_url = s3_result.get("file_url")
+    public = s3_result.get("public")
 
-            if not public:
-                file_url = get_temporary_download_url(
-                    file_url,
-                    region,
-                    access_key,
-                    secret_key,
-                    expiration=3600,  # Set expiration to 1 hour
-                )
+    if not file_url:
+        raise HTTPException(status_code=500, detail="File upload failed: No file_url returned from S3.")
 
-            # TODO: Implement PostHog event capture here if needed
-            
-            return {
-                "message": "File uploaded successfully",
-                "file_id": file_id,
-                "file_name": file.filename,
-                "file_url": file_url,
-            }
+    if not public:
+        file_url = get_temporary_download_url(
+            file_url,
+            s3_result["region"],
+            s3_result["access_key"],
+            s3_result["secret_key"],
+            expiration=3600,  # Set expiration to 1 hour
+        )
 
-            # # After successful upload, create asset record
-            # new_asset = Asset(
-            #     id=file_id,
-            #     name=file.filename,
-            #     is_folder=False,
-            #     path=file_path,
-            #     url=file_url,
-            #     mime_type=file_type,
-            #     created_at=datetime.utcnow(),
-            #     updated_at=datetime.utcnow(),
-            #     file_size=file.size
-            # )
-            
-            # db.add(new_asset)
-            # await db.commit()
-            # await db.refresh(new_asset)
-            
-            # return new_asset
-        except Exception as e:
-            logger.error(f"Error uploading file: {str(e)}")
-            raise HTTPException(status_code=500, detail="Error uploading file")
+    return {
+        "message": "File uploaded successfully",
+        "file_id": file_id,
+        "file_name": file.filename,
+        "file_url": file_url,
+    }
 
 
 @router.post("/assets/folder", response_model=AssetResponse)
@@ -495,3 +459,41 @@ async def get_asset(
         )
     
     return asset
+
+async def upload_file_to_s3(
+    file_content: bytes,
+    key: str,
+    content_type: str,
+    s3_config,
+):
+    bucket = s3_config.bucket
+    region = s3_config.region
+    access_key = s3_config.access_key
+    secret_key = s3_config.secret_key
+    public = s3_config.public
+
+    try:
+        async with aioboto3.Session().client(
+            "s3",
+            region_name=region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4"),
+        ) as s3_client:
+            await s3_client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=file_content,
+                ACL="public-read" if public else "private",
+                ContentType=content_type,
+            )
+        file_url = f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+        return {
+            "file_url": file_url,
+            "region": region,
+            "access_key": access_key,
+            "secret_key": secret_key,
+            "public": public,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading file to S3: {str(e)}")

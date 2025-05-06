@@ -41,6 +41,7 @@ from uuid import UUID
 import random
 from cryptography.fernet import Fernet
 import base64
+import aioboto3
 
 # Get JWT secret from environment variable
 JWT_SECRET = os.getenv("JWT_SECRET")
@@ -539,6 +540,23 @@ def get_temporary_download_url(
         secret_key=secret_key,
         expiration=expiration,
     )
+
+async def delete_s3_object(key):
+    bucket = os.environ.get("SPACES_BUCKET_V2")
+    region = os.environ.get("SPACES_REGION_V2")
+    access_key = os.environ.get("SPACES_KEY_V2")
+    secret_key = os.environ.get("SPACES_SECRET_V2")
+
+    if not all([bucket, region, access_key, secret_key]):
+        raise RuntimeError("Missing S3 credentials in environment variables.")
+
+    async with aioboto3.Session().client(
+        "s3",
+        region_name=region,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+    ) as s3_client:
+        await s3_client.delete_object(Bucket=bucket, Key=key)
 
 
 def generate_presigned_download_url(
