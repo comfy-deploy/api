@@ -1488,6 +1488,21 @@ async def delete_session(
                 await modal.functions.FunctionCall.from_id(modal_function_id).cancel.aio()
     except Exception as e:
         logger.error(f"Error handling modal function {modal_function_id}: {str(e)}")
+        
+        # Try to handle gRPC-style exceptions by checking for status code attribute
+        error_info = getattr(e, "args", None)
+        if error_info and isinstance(error_info, tuple) and len(error_info) >= 1:
+            # The first element might be the status enum
+            status = error_info[0]
+            status_code = getattr(status, "value", None)
+            
+            # Check if it's a NOT_FOUND status (5)
+            if status_code == 5 or (isinstance(status, tuple) and status[0] == 5):
+                if gpuEvent.start_time is not None and gpuEvent.end_time is None:
+                    gpuEvent.end_time = gpuEvent.start_time
+                    await db.commit()
+                    await db.refresh(gpuEvent)
+                    logfire.error("Session end has some problem, function ID might be expired", function_id=modal_function_id)
 
     # Update GPU event end time if is sandbox
     if is_sandbox:

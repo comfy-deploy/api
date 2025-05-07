@@ -31,10 +31,7 @@ import aiohttp
 from urllib.parse import urlparse
 import re
 from typing import Optional, Tuple
-import mimetypes
-from api.routes.files import upload_file_to_s3
-from api.routes.utils import get_temporary_download_url, delete_s3_object
-from api.utils.storage_helper import get_s3_config
+from api.routes.utils import delete_s3_object
 
 logger = logging.getLogger(__name__)
 
@@ -440,6 +437,7 @@ async def handle_file_download(
     upload_type: str,
     db_model_id: str,
     background_tasks: BackgroundTasks,
+    s3_upload: Optional[bool] = None,
 ) -> StreamingResponse:
     """Helper function to handle file downloads with progress tracking"""
     try:
@@ -490,17 +488,12 @@ async def handle_file_download(
                             )
                         )
                     elif event.get("status") == "success":
-                            from urllib.parse import urlparse, unquote
-                            
-                            if download_url:
-                                parsed = urlparse(download_url)
-                                s3_key = unquote(parsed.path.lstrip("/"))
-                                if s3_key.startswith("s3_models/"):
-                                    try:
-                                        bucket = parsed.netloc.split(".s3")[0]
-                                        await delete_s3_object(bucket, s3_key)
-                                    except Exception as e:
-                                        logger.error(f"Failed to delete S3 object {s3_key}: {e}")
+                            if s3_upload: 
+                                try:
+                                    await delete_s3_object(download_url)
+                                except Exception as e:
+                                        logger.error(f"Failed to delete S3 object {download_url}: {e}")
+
                             model_status_query = (
                                 update(ModelDB)
                                 .where(ModelDB.id == db_model_id)
@@ -579,7 +572,8 @@ async def handle_generic_model(
     request: Request,
     data: AddFileInputNew, 
     db: AsyncSession,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    s3_upload: Optional[bool] = None,
 ):
     filename = data.filename or await get_filename_from_url(data.url)
     if not filename:
@@ -616,7 +610,8 @@ async def handle_generic_model(
         filename=filename,
         upload_type="download-url", 
         db_model_id=str(model.id),
-        background_tasks=background_tasks
+        background_tasks=background_tasks,
+        s3_upload=s3_upload
     )
 
     return {"message": "Generic model download started"}
@@ -1354,7 +1349,8 @@ async def add_model(
     request: Request,
     body: AddModelRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    s3_upload: Optional[bool] = None,
 ):
     plan = request.state.current_user.get("plan")
     if plan == "free":
@@ -1423,7 +1419,8 @@ async def add_model(
                     folder_path=body.folderPath
                 ),
                 db=db,
-                background_tasks=background_tasks
+                background_tasks=background_tasks,
+                s3_upload=s3_upload
             )
             
         else:
@@ -1511,89 +1508,3 @@ async def move_file(
             status_code=500, 
             detail=f"Error moving file: {str(e)}"
         )
-
-@router.post("/volume/file/custom-upload")
-async def custom_file_upload(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    file: UploadFile = File(...),
-    volume_name: str = Form(...),
-    filename: str = Form(...),
-    target_path: str = Form(""),
-    subfolder: str = Form(None),
-    background_tasks: BackgroundTasks = BackgroundTasks()
-):
-    try:
-        print(f"subfolder {subfolder} target_path {target_path}")
-        file_size = file.size
-        max_size_bytes = 2 * 1024 * 1024 * 1024
-        if file_size > max_size_bytes:
-            raise HTTPException(
-                status_code=400,
-                detail=f"This file exceeds the 2GB size limit. For large model files, we recommend using Hugging Face or Civitai for hosting.",
-            )
-
-        allowed_extensions = (".safetensors", ".ckpt", ".pt", ".bin", ".pth", ".gguf")
-        if not file.filename.lower().endswith(allowed_extensions):
-            raise HTTPException(
-                status_code=400,
-                detail="Unsupported file type",
-            )
-        
-        # Build the file path
-        parts = ["s3_models", volume_name.strip("/")]
-        if target_path:
-            parts.append(target_path.strip("/"))
-        if subfolder:
-            parts.append(subfolder.strip("/"))
-        parts.append(filename)
-        file_path = "/".join(parts)
-
-        # Get S3 config
-        s3_config = await get_s3_config(request, db)
-
-        # Infer content type
-        inferred_type, _ = mimetypes.guess_type(filename)
-        content_type = inferred_type or "application/octet-stream"
-
-        # Upload to S3
-        file_content = await file.read()
-        s3_result = await upload_file_to_s3(
-            file_content=file_content,
-            key=file_path,
-            content_type=content_type,
-            s3_config=s3_config,
-        )
-        file_url = s3_result.get("file_url")
-
-        if not file_url:
-            raise HTTPException(status_code=500, detail="File upload failed: No file_url returned from S3.")
-
-        # Generate presigned URL (temporary download URL)
-        presigned_url = get_temporary_download_url(
-            file_url,
-            s3_result["region"],
-            s3_result["access_key"],
-            s3_result["secret_key"],
-            expiration=3600,  # 1 hour
-        )
-
-        # Prepare data for handle_generic_model
-        folder_path = target_path.rstrip("/")
-        if subfolder:
-            folder_path += "/" + subfolder.strip("/")
-
-        data = AddFileInputNew(
-            url=presigned_url,
-            filename=filename,
-            folder_path=folder_path
-        )
-
-        # Call handle_generic_model and return its result
-        return await handle_generic_model(request, data, db, background_tasks)
-
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Unexpected error in custom_file_upload: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
