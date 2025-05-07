@@ -650,7 +650,9 @@ class Model(SerializableMixin, Base):
         default="checkpoint",
     )
     error_log = Column(String)
-
+    
+    object_key = Column(String)
+    delete_after_install = Column(Boolean, nullable=False, default=False)
     size = Column(BigInteger)
 
     deleted = Column(Boolean, nullable=False, default=False)
