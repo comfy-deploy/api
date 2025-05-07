@@ -1508,3 +1508,127 @@ async def move_file(
             status_code=500,
             detail=f"Error moving file: {str(e)}"
         )
+
+@router.get("/volume/model/presigned-url")
+async def get_model_upload_url(
+    request: Request,
+    file_name: str = Query(..., description="Name of the file to upload"),
+    folder_path: str = Query(..., description="Folder path for the model"),
+    delete_after_install: bool = Query(False, description="Whether to delete the model after installation"),
+    size: Optional[int] = Query(None, description="Size of the file in bytes"),
+    type: str = Query(..., description="Content type of the file"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a presigned URL for direct model upload to S3"""
+    plan = request.state.current_user.get("plan")
+    if plan == "free":
+        raise HTTPException(status_code=403, detail="Free plan users cannot add models")
+    
+    s3_config = await get_s3_config(request, db)
+    public = s3_config.public
+    
+    model_id = str(uuid4())
+    
+    file_extension = os.path.splitext(file_name)[1]
+    object_key = os.path.join("models", folder_path.lstrip("/"), file_name).replace("\\", "/")
+    
+    # Check if file exists
+    try:
+        volume_name = await get_volume_name(request, db)
+        volume = await lookup_volume(volume_name)
+        file_path = os.path.join(folder_path, file_name)
+        exists = await does_file_exist(file_path, volume)
+        if exists:
+            raise HTTPException(status_code=409, detail=f"File '{file_name}' already exists in folder '{folder_path}'")
+    except Exception as e:
+        if not isinstance(e, HTTPException):
+            logger.error(f"Error checking file existence: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error checking file existence")
+        raise
+    
+    upload_url = generate_presigned_url(
+        object_key=object_key,
+        expiration=3600,  # 1 hour expiration
+        http_method="PUT",
+        size=size,
+        content_type=type,
+        public=public,
+        bucket=s3_config.bucket,
+        region=s3_config.region,
+        access_key=s3_config.access_key,
+        secret_key=s3_config.secret_key,
+    )
+    
+    download_url = None
+    if not public:
+        download_url = generate_presigned_download_url(
+            bucket=s3_config.bucket,
+            object_key=object_key,
+            region=s3_config.region,
+            access_key=s3_config.access_key,
+            secret_key=s3_config.secret_key,
+            expiration=7200,  # 2 hour expiration
+        )
+    else:
+        composed_endpoint = f"https://{s3_config.bucket}.s3.{s3_config.region}.amazonaws.com"
+        download_url = f"{composed_endpoint}/{object_key}"
+    
+    return {
+        "model_id": model_id,
+        "upload_url": upload_url,
+        "download_url": download_url,
+        "object_key": object_key,
+        "is_public": public,
+        "delete_after_install": delete_after_install
+    }
+
+class RegisterModelRequest(BaseModel):
+    model_id: str
+    model_name: str
+    folder_path: str
+    object_key: str
+    size: int
+    download_url: str
+    delete_after_install: bool = False
+
+@router.post("/volume/model/register")
+async def register_model(
+    request: Request,
+    body: RegisterModelRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Register a model after S3 upload completes"""
+    try:
+        current_user = request.state.current_user
+        user_id = current_user["user_id"]
+        org_id = current_user.get("org_id")
+        
+        volumes = await retrieve_model_volumes(request, db)
+        
+        # Create model record without the removed columns
+        new_model = ModelDB(
+            id=UUID(body.model_id),
+            user_id=user_id,
+            org_id=org_id,
+            user_volume_id=volumes[0]["id"],
+            upload_type="other",
+            model_name=body.model_name,
+            folder_path=body.folder_path,
+            s3_url=body.download_url,
+            description=f"delete_after_install={body.delete_after_install}" if body.delete_after_install else None,
+            size=body.size,
+            model_type="custom",
+            status="success",
+            is_public=True,  # Set according to your requirements
+            created_at=datetime.now(),
+            updated_at=datetime.now()
+        )
+        
+        db.add(new_model)
+        await db.commit()
+        await db.refresh(new_model)
+        
+        return {"message": "Model registered successfully", "model_id": str(new_model.id)}
+    except Exception as e:
+        logger.error(f"Error registering model: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
