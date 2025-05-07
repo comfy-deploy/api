@@ -1600,7 +1600,7 @@ async def register_model(
         
         volumes = await retrieve_model_volumes(request, db)
         
-        # Create model record
+        # Create model record without the removed columns
         new_model = ModelDB(
             id=UUID(body.model_id),
             user_id=user_id,
@@ -1609,9 +1609,9 @@ async def register_model(
             upload_type="other",
             model_name=body.model_name,
             folder_path=body.folder_path,
-            object_key=body.object_key,
+            s3_url=body.download_url,
+            description=f"delete_after_install={body.delete_after_install}" if body.delete_after_install else None,
             size=body.size,
-            delete_after_install=body.delete_after_install,
             model_type="custom",
             status="success",
             is_public=True,  # Set according to your requirements
