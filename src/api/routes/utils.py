@@ -617,6 +617,59 @@ def generate_presigned_url(
     return response
 
 
+def delete_s3_object(
+    bucket: str,
+    object_key: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+) -> bool:
+    """Delete an object from S3 bucket.
+    
+    Args:
+        bucket: S3 bucket name
+        object_key: Object key to delete
+        region: AWS region
+        access_key: AWS access key
+        secret_key: AWS secret key
+        
+    Returns:
+        bool: True if deletion was successful, False otherwise
+    """
+    try:
+        s3_client = boto3.client(
+            's3',
+            region_name=region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+        )
+        s3_client.delete_object(Bucket=bucket, Key=object_key)
+        logging.info(f"Successfully deleted S3 object: {bucket}/{object_key}")
+        return True
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error deleting S3 object: {str(e)}")
+        return False
+
+
+def get_delete_after_install_from_description(description: str) -> bool:
+    """Extract delete_after_install flag from model description.
+    
+    Args:
+        description: Model description string
+        
+    Returns:
+        bool: True if delete_after_install is True, False otherwise
+    """
+    if not description:
+        return False
+        
+    if "delete_after_install=True" in description:
+        return True
+        
+    return False
+
+
 project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
 
 

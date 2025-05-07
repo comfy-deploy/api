@@ -444,6 +444,7 @@ async def handle_file_download(
     upload_type: str,
     db_model_id: str,
     background_tasks: BackgroundTasks,
+    delete_after_install: bool = False,
 ) -> StreamingResponse:
     """Helper function to handle file downloads with progress tracking"""
     try:
@@ -503,6 +504,33 @@ async def handle_file_download(
                                 download_progress=100,
                             )
                         )
+                        
+                        if delete_after_install and upload_type == "download-url":
+                            try:
+                                model = await db.execute(
+                                    select(ModelDB).where(ModelDB.id == db_model_id)
+                                )
+                                model = model.scalars().first()
+                                
+                                if model and model.s3_url:
+                                    s3_config = await get_s3_config(request, db)
+                                    
+                                    # Extract object key from S3 URL
+                                    url_parts = model.s3_url.split('/')
+                                    object_key = '/'.join(url_parts[3:]) if len(url_parts) > 3 else None
+                                    
+                                    if object_key:
+                                        from .utils import delete_s3_object
+                                        delete_s3_object(
+                                            bucket=s3_config.bucket,
+                                            object_key=object_key,
+                                            region=s3_config.region,
+                                            access_key=s3_config.access_key,
+                                            secret_key=s3_config.secret_key,
+                                        )
+                                        logging.info(f"Deleted S3 object after installation: {object_key}")
+                            except Exception as e:
+                                logging.error(f"Error deleting S3 object after installation: {str(e)}")
                     elif event.get("status") == "failed":
                         model_status_query = (
                             update(ModelDB)
@@ -610,7 +638,8 @@ async def handle_generic_model(
         filename=filename,
         upload_type="download-url",
         db_model_id=str(model.id),
-        background_tasks=background_tasks
+        background_tasks=background_tasks,
+        delete_after_install=data.delete_after_install
     )
 
     return {"message": "Generic model download started"}
@@ -1523,15 +1552,15 @@ async def get_model_upload_url(
     plan = request.state.current_user.get("plan")
     if plan == "free":
         raise HTTPException(status_code=403, detail="Free plan users cannot add models")
-    
+
     s3_config = await get_s3_config(request, db)
     public = s3_config.public
-    
+
     model_id = str(uuid4())
-    
+
     file_extension = os.path.splitext(file_name)[1]
     object_key = os.path.join("models", folder_path.lstrip("/"), file_name).replace("\\", "/")
-    
+
     # Check if file exists
     try:
         volume_name = await get_volume_name(request, db)
@@ -1545,7 +1574,7 @@ async def get_model_upload_url(
             logger.error(f"Error checking file existence: {str(e)}")
             raise HTTPException(status_code=500, detail="Error checking file existence")
         raise
-    
+
     upload_url = generate_presigned_url(
         object_key=object_key,
         expiration=3600,  # 1 hour expiration
@@ -1558,7 +1587,7 @@ async def get_model_upload_url(
         access_key=s3_config.access_key,
         secret_key=s3_config.secret_key,
     )
-    
+
     download_url = None
     if not public:
         download_url = generate_presigned_download_url(
@@ -1572,7 +1601,7 @@ async def get_model_upload_url(
     else:
         composed_endpoint = f"https://{s3_config.bucket}.s3.{s3_config.region}.amazonaws.com"
         download_url = f"{composed_endpoint}/{object_key}"
-    
+
     return {
         "model_id": model_id,
         "upload_url": upload_url,
@@ -1602,9 +1631,9 @@ async def register_model(
         current_user = request.state.current_user
         user_id = current_user["user_id"]
         org_id = current_user.get("org_id")
-        
+
         volumes = await retrieve_model_volumes(request, db)
-        
+
         # Create model record without the removed columns
         new_model = ModelDB(
             id=UUID(body.model_id),
@@ -1623,11 +1652,11 @@ async def register_model(
             created_at=datetime.now(),
             updated_at=datetime.now()
         )
-        
+
         db.add(new_model)
         await db.commit()
         await db.refresh(new_model)
-        
+
         return {"message": "Model registered successfully", "model_id": str(new_model.id)}
     except Exception as e:
         logger.error(f"Error registering model: {str(e)}")
