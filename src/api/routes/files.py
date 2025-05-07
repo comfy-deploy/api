@@ -587,4 +587,3 @@ async def upload_file_to_s3(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading file to S3: {str(e)}")
-
