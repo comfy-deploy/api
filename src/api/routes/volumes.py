@@ -261,23 +261,24 @@ DIRECTORY_TYPE = 2
 
 class NewRenameFileBody(BaseModel):
     filename: str
-    
+
 class AddFileInputNew(BaseModel):
     url: str
     filename: Optional[str]
     folder_path: str
+    delete_after_install: bool = False
 
 
 # TODO: verify removal
 @router.post("/volume/file")
 async def add_file_volume(
-    request: Request, 
+    request: Request,
     body: AddFileInputNew,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     """Handle model file uploads from different sources (Civitai, HuggingFace, or generic URLs)"""
-    
+
     if "civitai.com/models/" in body.url:
         return await handle_civitai_model(request, body, db, background_tasks)
     elif "huggingface.co/" in body.url:
@@ -288,13 +289,13 @@ async def add_file_volume(
 # TODO: verify removal
 @router.post("/file")
 async def add_file(
-    request: Request, 
+    request: Request,
     body: AddFileInputNew,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     """Handle model file uploads from different sources (Civitai, HuggingFace, or generic URLs)"""
-    
+
     if "civitai.com/models/" in body.url:
         return await handle_civitai_model(request, body, db, background_tasks)
     elif "huggingface.co/" in body.url:
@@ -376,7 +377,7 @@ async def rename_file(
 @router.post("/volume/mv", include_in_schema=False)
 async def move_file(request: Request, body: MoveFileBody, db: AsyncSession = Depends(get_db)):
     src_path = body.src_path
-    dst_path = body.dst_path 
+    dst_path = body.dst_path
     volume_name = await get_volume_name(request, db)
 
     try:
@@ -569,7 +570,7 @@ async def add_file_old(
 
 async def handle_generic_model(
     request: Request,
-    data: AddFileInputNew, 
+    data: AddFileInputNew,
     db: AsyncSession,
     background_tasks: BackgroundTasks
 ):
@@ -589,7 +590,7 @@ async def handle_generic_model(
     await check_file_existence(filename, data.folder_path, data.url, "download-url", request, db)
 
     volumes = await retrieve_model_volumes(request, db)
-    
+
     model = await add_model_download_url(
         request=request,
         db=db,
@@ -597,7 +598,8 @@ async def handle_generic_model(
         model_name=filename,
         url=data.url,
         volume_id=volumes[0]["id"],
-        custom_path=data.folder_path
+        custom_path=data.folder_path,
+        delete_after_install=data.delete_after_install
     )
 
     await handle_file_download(
@@ -606,7 +608,7 @@ async def handle_generic_model(
         download_url=data.url,
         folder_path=data.folder_path,
         filename=filename,
-        upload_type="download-url", 
+        upload_type="download-url",
         db_model_id=str(model.id),
         background_tasks=background_tasks
     )
@@ -620,7 +622,8 @@ async def add_model_download_url(
     model_name: str,
     url: str,
     volume_id: str,
-    custom_path: str
+    custom_path: str,
+    delete_after_install: bool = False
 ) -> ModelDB:
     """Create a new model record in the database"""
     current_user = request.state.current_user
@@ -637,13 +640,14 @@ async def add_model_download_url(
         model_type="custom",
         folder_path=custom_path,
         status="started",
-        download_progress=0
+        download_progress=0,
+        description=f"delete_after_install={delete_after_install}" if delete_after_install else None
     )
 
     db.add(new_model)
     await db.commit()
     await db.refresh(new_model)
-    
+
     return new_model
 
 async def create_model_error_record(
@@ -658,7 +662,7 @@ async def create_model_error_record(
     """Create an error record in the model table"""
     volumes = await retrieve_model_volumes(request, db)
     current_user = request.state.current_user
-    
+
     new_model = ModelDB(
         user_id=current_user["user_id"],
         org_id=current_user.get("org_id"),
@@ -676,7 +680,7 @@ async def create_model_error_record(
     db.add(new_model)
     await db.commit()
     await db.refresh(new_model)
-    
+
     return new_model
 
 # # TODO: verify removal
@@ -873,16 +877,16 @@ async def get_filename_from_url(url: str) -> Optional[str]:
                         filename_match = re.search(r'filename="?([^"]+)"?', content_disposition)
                         if filename_match:
                             return filename_match.group(1)
-        
+
         return None
     except Exception as e:
         logger.error(f"Error getting filename from URL: {str(e)}")
         return None
 
 async def check_file_existence(
-    filename: str, 
-    custom_path: str, 
-    url: str, 
+    filename: str,
+    custom_path: str,
+    url: str,
     upload_type: str,
     request: Request,
     db: AsyncSession
@@ -891,7 +895,7 @@ async def check_file_existence(
     try:
         volume_name = await get_volume_name(request, db)
         volume = Volume.from_name(volume_name)
-        
+
         full_path = os.path.join(custom_path, filename)
         try:
             contents = await volume.listdir.aio(full_path)
@@ -906,7 +910,7 @@ async def check_file_existence(
                     model_name=filename
                 )
                 raise HTTPException(
-                    status_code=409, 
+                    status_code=409,
                     detail=f"File {full_path} already exists"
                 )
         except grpclib.exceptions.GRPCError as e:
@@ -930,10 +934,10 @@ async def handle_civitai_model(
         # Parse Civitai URL and get model info
         model_id, version_id = parse_civitai_url(data.url)
         civitai_info = await get_civitai_model_info(model_id)
-        
+
         if not civitai_info.get("modelVersions"):
             raise HTTPException(status_code=400, detail="No model versions found")
-            
+
         # Select version (latest if not specified)
         if version_id:
             selected_version = next(
@@ -942,23 +946,23 @@ async def handle_civitai_model(
             )
         else:
             selected_version = civitai_info["modelVersions"][0]
-        
+
         if not selected_version:
             raise HTTPException(status_code=400, detail="Model version not found")
-            
+
         # Get filename
         filename = data.filename or selected_version["files"][0]["name"]
-        
+
         # Check if file exists
         await check_file_existence(
-            filename, 
-            data.folder_path, 
-            data.url, 
+            filename,
+            data.folder_path,
+            data.url,
             "civitai",
             request,
             db
         )
-        
+
         # Create model record
         volumes = await retrieve_model_volumes(request, db)
         model = ModelDB(
@@ -977,11 +981,11 @@ async def handle_civitai_model(
             status="started",
             download_progress=0
         )
-        
+
         db.add(model)
         await db.commit()
         await db.refresh(model)
-        
+
         # Start download
         await handle_file_download(
             request=request,
@@ -993,9 +997,9 @@ async def handle_civitai_model(
             db_model_id=str(model.id),
             background_tasks=background_tasks
         )
-        
+
         return {"message": "Civitai model download started"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1015,7 +1019,7 @@ async def handle_huggingface_model(
         repo_id = extract_huggingface_repo_id(data.url)
         if not repo_id:
             raise HTTPException(status_code=400, detail="Invalid Hugging Face URL")
-            
+
         # Get filename
         filename = data.filename or await get_filename_from_url(data.url)
         if not filename:
@@ -1028,17 +1032,17 @@ async def handle_huggingface_model(
                 folder_path=data.folder_path
             )
             raise HTTPException(status_code=400, detail="No filename found")
-            
+
         # Check if file exists
         await check_file_existence(
-            filename, 
-            data.folder_path, 
-            data.url, 
+            filename,
+            data.folder_path,
+            data.url,
             "huggingface",
             request,
             db
         )
-        
+
         # Create model record
         volumes = await retrieve_model_volumes(request, db)
         model = await add_model_download_url(
@@ -1050,7 +1054,7 @@ async def handle_huggingface_model(
             volume_id=volumes[0]["id"],
             custom_path=data.folder_path
         )
-        
+
         # Start download
         await handle_file_download(
             request=request,
@@ -1062,9 +1066,9 @@ async def handle_huggingface_model(
             db_model_id=str(model.id),
             background_tasks=background_tasks
         )
-        
+
         return {"message": "Hugging Face model download started"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1152,7 +1156,7 @@ async def validate_civitai_url(body: CivitaiValidateRequest):
         model_data = await get_civitai_model_info(model_id)
         if not model_data:
             return CivitaiValidateResponse(exists=False)
-        
+
 
         # Get version info
         if version_id:
@@ -1188,7 +1192,7 @@ async def validate_civitai_url(body: CivitaiValidateRequest):
 class HuggingFaceRepoRequest(BaseModel):
     repo_id: str
     folder_path: str
-    
+
 async def add_huggingface_repo(
     request: Request,
     body: HuggingFaceRepoRequest,
@@ -1200,34 +1204,34 @@ async def add_huggingface_repo(
         # Validate repo exists
         user_settings = await get_user_settings(request, db)
         token = user_settings.hugging_face_token if user_settings else None
-        
+
         try:
             repo_info(body.repo_id, token=token)
         except RepositoryNotFoundError:
             raise HTTPException(status_code=404, detail="HuggingFace repository not found")
-        
+
         # Check if folder exists
         volume_name = await get_volume_name(request, db)
         volume = Volume.from_name(volume_name)
-        
+
         # Get repo name for folder check
         repo_name = body.repo_id.split("/")[-1]
         target_folder = os.path.join(body.folder_path, repo_name)
-        
+
         # Check if the target folder already exists
         try:
             contents = await volume.listdir.aio(target_folder)
             if contents:
                 # Folder exists and has content
                 raise HTTPException(
-                    status_code=409, 
+                    status_code=409,
                     detail=f"Folder '{target_folder}' already exists. Please choose a different folder path."
                 )
         except grpclib.exceptions.GRPCError as e:
             # NOT_FOUND is expected and means we can proceed
             if e.status != grpclib.Status.NOT_FOUND:
                 raise HTTPException(status_code=500, detail=f"Error checking folder: {str(e)}")
-        
+
         # Create model record
         volumes = await retrieve_model_volumes(request, db)
         model = ModelDB(
@@ -1243,16 +1247,16 @@ async def add_huggingface_repo(
             download_progress=0,
             hf_url=f"https://huggingface.co/{body.repo_id}"
         )
-        
+
         db.add(model)
         await db.commit()
         await db.refresh(model)
-        
+
         # Use Modal to download the entire repo
         modal_download_repo_task = modal.Function.lookup(
             "volume-operations", "modal_download_repo_task"
         )
-        
+
         async def download_repo_task():
             try:
                 async for event in modal_download_repo_task.remote_gen.aio(
@@ -1315,11 +1319,11 @@ async def add_huggingface_repo(
                 await db.execute(model_status_query)
                 await db.commit()
                 raise e
-                
+
         background_tasks.add_task(download_repo_task)
-        
+
         return {"message": "HuggingFace repository download started", "model_id": str(model.id)}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1333,13 +1337,13 @@ class CivitaiModel(BaseModel):
     url: str
 
 class AddModelRequest(BaseModel):
-    source: Literal["huggingface", "civitai", "link"]
+    source: Literal["huggingface", "civitai", "link", "local"]
     folderPath: str
     filename: Optional[str] = None
-    
     huggingface: Optional[HuggingfaceModel] = None
     civitai: Optional[CivitaiModel] = None
     downloadLink: Optional[str] = None
+    deleteAfterInstall: bool = False
 
 @router.post("/volume/model")
 async def add_model(
@@ -1351,14 +1355,14 @@ async def add_model(
     plan = request.state.current_user.get("plan")
     if plan == "free":
         raise HTTPException(status_code=403, detail="Free plan users cannot add models")
-    
+
     """Unified endpoint to add models from different sources"""
     try:
         # Validate request based on source
         if body.source == "huggingface":
             if not body.huggingface or not body.huggingface.repoId:
                 raise HTTPException(status_code=400, detail="HuggingFace repo ID is required")
-                
+
             # Check if it's a repo download or file download
             if "/" in body.huggingface.repoId and not body.filename:
                 # It's a repository download - use the correct upload_type
@@ -1376,7 +1380,7 @@ async def add_model(
                 url = f"https://huggingface.co/{body.huggingface.repoId}"
                 if not body.filename:
                     raise HTTPException(status_code=400, detail="Filename is required for HuggingFace file downloads")
-                
+
                 return await handle_huggingface_model(
                     request=request,
                     data=AddFileInputNew(
@@ -1387,11 +1391,11 @@ async def add_model(
                     db=db,
                     background_tasks=background_tasks
                 )
-                
+
         elif body.source == "civitai":
             if not body.civitai or not body.civitai.url:
                 raise HTTPException(status_code=400, detail="Civitai URL is required")
-                
+
             return await handle_civitai_model(
                 request=request,
                 data=AddFileInputNew(
@@ -1402,25 +1406,26 @@ async def add_model(
                 db=db,
                 background_tasks=background_tasks
             )
-            
+
         elif body.source == "link":
             if not body.downloadLink:
                 raise HTTPException(status_code=400, detail="Download link is required")
-                
+
             return await handle_generic_model(
                 request=request,
                 data=AddFileInputNew(
                     url=body.downloadLink,
                     filename=body.filename,
-                    folder_path=body.folderPath
+                    folder_path=body.folderPath,
+                    delete_after_install=body.deleteAfterInstall
                 ),
                 db=db,
                 background_tasks=background_tasks
             )
-            
+
         else:
             raise HTTPException(status_code=400, detail="Invalid source type")
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1444,18 +1449,18 @@ class MoveFileRequest(BaseModel):
 
 @router.post("/volume/move", response_model=Dict[str, str])
 async def move_file(
-    request: Request, 
-    body: MoveFileRequest, 
+    request: Request,
+    body: MoveFileRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Move a file or directory from one location to another within a volume.
-    
+
     Args:
         source_path: The path to the file or directory to be moved
         destination_path: The destination path where the file or directory will be moved to
         overwrite: Whether to overwrite existing files at the destination (default: False)
-    
+
     Returns:
         A dictionary containing the old and new paths
     """
@@ -1500,130 +1505,6 @@ async def move_file(
         }
     except Exception as e:
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail=f"Error moving file: {str(e)}"
         )
-
-@router.get("/volume/model/presigned-url")
-async def get_model_upload_url(
-    request: Request,
-    file_name: str = Query(..., description="Name of the file to upload"),
-    folder_path: str = Query(..., description="Folder path for the model"),
-    delete_after_install: bool = Query(False, description="Whether to delete the model after installation"),
-    size: Optional[int] = Query(None, description="Size of the file in bytes"),
-    type: str = Query(..., description="Content type of the file"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate a presigned URL for direct model upload to S3"""
-    plan = request.state.current_user.get("plan")
-    if plan == "free":
-        raise HTTPException(status_code=403, detail="Free plan users cannot add models")
-    
-    s3_config = await get_s3_config(request, db)
-    public = s3_config.public
-    
-    model_id = str(uuid4())
-    
-    file_extension = os.path.splitext(file_name)[1]
-    object_key = os.path.join("models", folder_path.lstrip("/"), file_name).replace("\\", "/")
-    
-    # Check if file exists
-    try:
-        volume_name = await get_volume_name(request, db)
-        volume = await lookup_volume(volume_name)
-        file_path = os.path.join(folder_path, file_name)
-        exists = await does_file_exist(file_path, volume)
-        if exists:
-            raise HTTPException(status_code=409, detail=f"File '{file_name}' already exists in folder '{folder_path}'")
-    except Exception as e:
-        if not isinstance(e, HTTPException):
-            logger.error(f"Error checking file existence: {str(e)}")
-            raise HTTPException(status_code=500, detail="Error checking file existence")
-        raise
-    
-    upload_url = generate_presigned_url(
-        object_key=object_key,
-        expiration=3600,  # 1 hour expiration
-        http_method="PUT",
-        size=size,
-        content_type=type,
-        public=public,
-        bucket=s3_config.bucket,
-        region=s3_config.region,
-        access_key=s3_config.access_key,
-        secret_key=s3_config.secret_key,
-    )
-    
-    download_url = None
-    if not public:
-        download_url = generate_presigned_download_url(
-            bucket=s3_config.bucket,
-            object_key=object_key,
-            region=s3_config.region,
-            access_key=s3_config.access_key,
-            secret_key=s3_config.secret_key,
-            expiration=7200,  # 2 hour expiration
-        )
-    else:
-        composed_endpoint = f"https://{s3_config.bucket}.s3.{s3_config.region}.amazonaws.com"
-        download_url = f"{composed_endpoint}/{object_key}"
-    
-    return {
-        "model_id": model_id,
-        "upload_url": upload_url,
-        "download_url": download_url,
-        "object_key": object_key,
-        "is_public": public,
-        "delete_after_install": delete_after_install
-    }
-
-class RegisterModelRequest(BaseModel):
-    model_id: str
-    model_name: str
-    folder_path: str
-    object_key: str
-    size: int
-    download_url: str
-    delete_after_install: bool = False
-
-@router.post("/volume/model/register")
-async def register_model(
-    request: Request,
-    body: RegisterModelRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Register a model after S3 upload completes"""
-    try:
-        current_user = request.state.current_user
-        user_id = current_user["user_id"]
-        org_id = current_user.get("org_id")
-        
-        volumes = await retrieve_model_volumes(request, db)
-        
-        # Create model record without the removed columns
-        new_model = ModelDB(
-            id=UUID(body.model_id),
-            user_id=user_id,
-            org_id=org_id,
-            user_volume_id=volumes[0]["id"],
-            upload_type="other",
-            model_name=body.model_name,
-            folder_path=body.folder_path,
-            s3_url=body.download_url,
-            description=f"delete_after_install={body.delete_after_install}" if body.delete_after_install else None,
-            size=body.size,
-            model_type="custom",
-            status="success",
-            is_public=True,  # Set according to your requirements
-            created_at=datetime.now(),
-            updated_at=datetime.now()
-        )
-        
-        db.add(new_model)
-        await db.commit()
-        await db.refresh(new_model)
-        
-        return {"message": "Model registered successfully", "model_id": str(new_model.id)}
-    except Exception as e:
-        logger.error(f"Error registering model: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
