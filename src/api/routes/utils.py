@@ -431,12 +431,22 @@ async def update_user_settings(request: Request, db: AsyncSession, body: any):
         )
 
     # Get existing settings or create new
-    user_settings = await db.execute(
-        select(UserSettings).where(
-            UserSettings.user_id == user_id
-        ).apply_org_check(request)
-    )
-    user_settings = user_settings.scalar_one_or_none()
+    # If the current user operates under an organisation, we want exactly **one** row per org.
+    # Otherwise we fall back to one row per individual user.
+
+    org_id = request.state.current_user.get("org_id")
+
+    if org_id is not None:
+        # Query by org_id only; do NOT filter by user_id so that all members share the same settings row.
+        user_settings_query = select(UserSettings).where(UserSettings.org_id == org_id).limit(1).order_by(UserSettings.created_at.desc())
+    else:
+        # Personal account (no org) – query by user_id with org_id IS NULL.
+        user_settings_query = select(UserSettings).where(
+            (UserSettings.user_id == user_id) & (UserSettings.org_id.is_(None))
+        )
+
+    user_settings_result = await db.execute(user_settings_query)
+    user_settings = user_settings_result.scalar_one_or_none()
     
     secret_manager = SecretManager()
 
