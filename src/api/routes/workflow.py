@@ -870,18 +870,18 @@ async def create_workflow(
 
         db.add(new_version)
         
-        if machine_id is not None:
-            await create_deployment(
-                request,
-                DeploymentCreate(
-                    workflow_version_id=str(new_version.id),
-                    workflow_id=str(workflow_id),
-                    machine_id=str(machine_id),
-                    machine_version_id=str(machine_version_id) if machine_version_id else None,
-                    environment="preview",
-                ),
-                db=db,
-            )
+        # if machine_id is not None:
+        #     await create_deployment(
+        #         request,
+        #         DeploymentCreate(
+        #             workflow_version_id=str(new_version.id),
+        #             workflow_id=str(workflow_id),
+        #             machine_id=str(machine_id),
+        #             machine_version_id=str(machine_version_id) if machine_version_id else None,
+        #             environment="preview",
+        #         ),
+        #         db=db,
+        #     )
 
         await db.commit()
 

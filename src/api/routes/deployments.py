@@ -43,6 +43,8 @@ STAGING_TTL_HOURS = 48  # 2 days
 PUBLIC_SHARE_TTL_HOURS = 24
 PRODUCTION_TTL_HOURS = None  # Indefinite
 
+allowed_plans = ["deployment_monthly", "deployment_yearly", "business_monthly", "business_yearly"]
+
 # Create a map of environment to TTL hours for easier lookup
 ENVIRONMENT_TTL_MAP = {
     "preview": PREVIEW_TTL_HOURS,
@@ -174,6 +176,15 @@ async def create_deployment(
     deployment_data: DeploymentCreate,
     db: AsyncSession = Depends(get_db),
 ):
+    if (
+        deployment_data.environment != "public-share"
+        and request.state.current_user.get("plan") not in allowed_plans
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Your current plan does not include deployment features"
+        )
+    
     user_id = request.state.current_user["user_id"]
     org_id = (
         request.state.current_user["org_id"]
@@ -342,6 +353,16 @@ async def update_deployment(
     deployment_data: DeploymentUpdate,
     db: AsyncSession = Depends(get_db),
 ):
+    if (
+        deployment_data.environment != "public-share"
+        and request.state.current_user.get("plan") not in allowed_plans
+    ):
+
+        raise HTTPException(
+            status_code=403,
+            detail="Your current plan does not include deployment features"
+        )
+    
     try:
         # Get existing deployment
         deployment_query = (
