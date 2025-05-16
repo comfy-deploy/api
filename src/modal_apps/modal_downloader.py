@@ -189,6 +189,7 @@ async def modal_download_repo_task(
     model_id: str,
     volume_name: str,
     token: Optional[str] = None,
+    use_repo_subfolder: bool = True,
 ) -> AsyncGenerator[Dict, None]:
     """
     Download an entire HuggingFace repository to a Modal volume.
@@ -249,7 +250,10 @@ async def modal_download_repo_task(
                     return
                 
                 # Create destination directory in volume
-                dest_dir = os.path.join(folder_path, repo_id.split("/")[-1])
+                if use_repo_subfolder:
+                    dest_dir = os.path.join(folder_path, repo_id.split("/")[-1])
+                else:
+                    dest_dir = folder_path
                 print(f"Will upload to destination directory: {dest_dir}")
                 
                 yield await report_progress(50, model_id)

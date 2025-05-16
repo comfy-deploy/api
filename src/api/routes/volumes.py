@@ -1209,6 +1209,7 @@ async def validate_civitai_url(body: CivitaiValidateRequest):
 class HuggingFaceRepoRequest(BaseModel):
     repo_id: str
     folder_path: str
+    use_repo_subfolder: bool = True
     
 async def add_huggingface_repo(
     request: Request,
@@ -1281,7 +1282,8 @@ async def add_huggingface_repo(
                     body.folder_path,
                     str(model.id),
                     volume_name,
-                    token
+                    token,
+                    body.use_repo_subfolder
                 ):
                     # Update database with the event status
                     if event.get("status") == "progress":
