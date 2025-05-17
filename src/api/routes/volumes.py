@@ -1209,7 +1209,7 @@ async def validate_civitai_url(body: CivitaiValidateRequest):
 class HuggingFaceRepoRequest(BaseModel):
     repo_id: str
     folder_path: str
-    destination_path: str
+    subfolder: str = ""
     
 async def add_huggingface_repo(
     request: Request,
@@ -1234,7 +1234,7 @@ async def add_huggingface_repo(
         
         # Get repo name for folder check
         repo_name = body.repo_id.split("/")[-1]
-        target_folder = body.destination_path
+        target_folder = os.path.join(body.folder_path, body.subfolder) if body.subfolder else body.folder_path
         
         # Check if the target folder already exists
         try:
@@ -1283,7 +1283,7 @@ async def add_huggingface_repo(
                     str(model.id),
                     volume_name,
                     token,
-                    body.destination_path
+                    target_folder
                 ):
                     # Update database with the event status
                     if event.get("status") == "progress":
@@ -1443,7 +1443,8 @@ async def add_model(
                     request=request,
                     body=HuggingFaceRepoRequest(
                         repo_id=body.huggingface.repoId,
-                        folder_path=body.folderPath
+                        folder_path=body.folderPath,
+                        subfolder=body.huggingface.subfolder or ""
                     ),
                     background_tasks=background_tasks,
                     db=db
