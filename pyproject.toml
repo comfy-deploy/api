@@ -27,7 +27,7 @@ dependencies = [
     "google-cloud-pubsub>=2.23.1",
     "websockets>=13.0.1",
     "python-multipart>=0.0.9",
-    "modal==0.72.33",
+    "modal==1.0.1",
     "sqlmodel>=0.0.22",
     "aioboto3>=7.0.0",
     "upstash-redis>=1.2.0",

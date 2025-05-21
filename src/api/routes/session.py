@@ -127,19 +127,19 @@ async def get_comfy_runner_for_workspace(
     print("has_new_tunnel_params", has_new_tunnel_params)
     if has_new_tunnel_params:
         runner = ComfyDeployRunner.with_options(
-            concurrency_limit=5,
+            max_containers=5,
             allow_concurrent_inputs=1,
             # 2 seconds minimum idle timeout
-            container_idle_timeout=2,
+            scaledown_window=2,
             timeout=timeout * 60,
             gpu=gpu if gpu != "CPU" else None,
         )(gpu=gpu, is_workspace=True)
     else:
         runner = ComfyDeployRunner.with_options(
-            concurrency_limit=1,
+            max_containers=1,
             allow_concurrent_inputs=1000,
             # 2 seconds minimum idle timeout
-            container_idle_timeout=2,
+            scaledown_window=2,
             timeout=timeout * 60,
             gpu=gpu if gpu != "CPU" else None,
         )(session_id=str(session_id), gpu=gpu)

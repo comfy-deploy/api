@@ -949,7 +949,7 @@ class BaseComfyDeployRunner:
     ) -> None:
         if volume_name is None:
             volume_name = config["private_model_volume"]
-        self.private_volume = modal.Volume.lookup(volume_name, create_if_missing=True)
+        self.private_volume = modal.Volume.from_name(volume_name, create_if_missing=True)
         self.mountIO = mountIO
         self.is_workspace = is_workspace
         self.user_id = user_id
@@ -2363,14 +2363,14 @@ class _ComfyDeployRunnerOptimizedImports(_ComfyDeployRunner):
     gpu=None,
     volumes=volumes,
     timeout=(config["run_timeout"] + 20),
-    container_idle_timeout=config["idle_timeout"],
-    allow_concurrent_inputs=config["allow_concurrent_inputs"],
-    concurrency_limit=config["concurrency_limit"],
+    scaledown_window=config["idle_timeout"],
+    max_containers=config["concurrency_limit"],
     enable_memory_snapshot=True,
     secrets=[modal.Secret.from_dict(secrets)],
     cpu=cpu,
     memory=memory,
 )
+@modal.concurrent(max_inputs=config["allow_concurrent_inputs"])
 class ComfyDeployRunnerOptimizedImports(_ComfyDeployRunnerOptimizedImports):
     pass
 
@@ -2454,13 +2454,13 @@ async def get_file_tree(path="/"):
     gpu=None,
     volumes=volumes,
     timeout=(config["run_timeout"] + 20),
-    container_idle_timeout=config["idle_timeout"],
-    allow_concurrent_inputs=config["allow_concurrent_inputs"],
-    concurrency_limit=config["concurrency_limit"],
+    scaledown_window=config["idle_timeout"],
+    max_containers=config["concurrency_limit"],
     secrets=[modal.Secret.from_dict(secrets)],
     cpu=cpu,
     memory=memory,
 )
+@modal.concurrent(max_inputs=config["allow_concurrent_inputs"])
 class ComfyDeployRunner(BaseComfyDeployRunner):
     @enter()
     async def setup(self):

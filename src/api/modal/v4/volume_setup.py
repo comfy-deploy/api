@@ -2,8 +2,8 @@ import modal
 from cd_config import config
 import os
 
-public_model_volume = modal.Volume.lookup(config["public_model_volume"], create_if_missing=True)
-private_volume = modal.Volume.lookup(config["private_model_volume"], create_if_missing=True)
+public_model_volume = modal.Volume.from_name(config["public_model_volume"], create_if_missing=True)
+private_volume = modal.Volume.from_name(config["private_model_volume"], create_if_missing=True)
 
 PUBLIC_BASEMODEL_DIR = "/public_models"
 PRIVATE_BASEMODEL_DIR_SYM = "/private_models"
