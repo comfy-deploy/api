@@ -10,16 +10,12 @@ from modal import (
     enter,
     exit,
 )
-from typing import Optional, Annotated, cast
+from typing import Optional, cast
 import json
 import urllib.request
 import urllib.parse
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, Request, HTTPException, WebSocket
-from fastapi import UploadFile, Form
-from pathlib import Path
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException, WebSocket
 from volume_setup import (
     volumes,
     PRIVATE_BASEMODEL_DIR_SYM,
@@ -33,13 +29,11 @@ import os
 import uuid
 from enum import Enum
 import asyncio
-import time
 from collections import deque
-import shutil
 from contextlib import contextmanager
 from io import StringIO
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 current_directory = os.path.dirname(os.path.realpath(__file__))
@@ -935,35 +929,20 @@ class BaseComfyDeployRunner:
         if not soft_exit:
             os._exit(0)
 
-    def __init__(
-        self,
-        volume_name: Optional[str] = None,
-        mountIO: Optional[bool] = False,
-        is_workspace: Optional[bool] = False,
-        user_id: Optional[str] = None,
-        org_id: Optional[str] = None,
-        gpu: Optional[str] = None,
-        timeout: Optional[int] = None,
-        session_id: Optional[str] = None,
-        workspace_tunnel: Optional[bool] = False,
-    ) -> None:
-        if volume_name is None:
-            volume_name = config["private_model_volume"]
-        self.private_volume = modal.Volume.from_name(volume_name, create_if_missing=True)
-        self.mountIO = mountIO
-        self.is_workspace = is_workspace
-        self.user_id = user_id
-        self.org_id = org_id
-        self.gpu = gpu
-        self.timeout = timeout
-        self.cold_start_queue = deque()
-        self.log_queues = deque()
-        self.workspace_tunnel = workspace_tunnel
-        self.session_id = session_id
-        self.gpu_event_id = None
-
-    # self.log_task = None
-
+    volume_name: str = modal.parameter(default=config["private_model_volume"])
+    mountIO: bool = modal.parameter(default=False)
+    org_id: str = modal.parameter(default=None)
+    user_id: str = modal.parameter(default=None)
+    is_workspace: bool = modal.parameter(default=False)
+    gpu: str = modal.parameter(default=None)
+    timeout: int = modal.parameter(default=None)
+    session_id: str = modal.parameter(default=None)
+    workspace_tunnel: bool = modal.parameter(default=False)
+    
+    cold_start_queue = deque()
+    log_queues = deque()
+    gpu_event_id = None
+    
     async def process_log_queue(self):
         try:
             while True:
@@ -1674,12 +1653,17 @@ class BaseComfyDeployRunner:
             #         pass
 
         # commit by default so commit after the workflow is executed
+        if (self.private_volume is None):
+            self.private_volume = modal.Volume.from_name(self.volume_name, create_if_missing=True)
         self.private_volume.commit()
         return result
 
     async def handle_container_enter_before_comfy(self):
         # Make sure that the ComfyUI API is available
         print("comfy-modal - check server")
+        
+        if (self.private_volume is None):
+            self.private_volume = modal.Volume.from_name(self.volume_name, create_if_missing=True)
 
         # reload volumes
         await public_model_volume.reload.aio()
