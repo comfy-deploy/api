@@ -41,6 +41,7 @@ dependencies = [
     "dub==0.18.2",
     "logtail-python>=0.3.3",
     "nanoid>=2.0.0",
+    "google-auth>=2.40.2",
 ]
 
 [build-system]

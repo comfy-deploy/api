@@ -629,7 +629,7 @@ async def update_run(
 
         user_settings = await get_user_settings(request, db)
         if outputs:
-            post_process_outputs(outputs, user_settings)
+            await post_process_outputs(outputs, user_settings)
         clean_up_outputs(outputs)
         # Instead of setting outputs directly, create a new dictionary with all the data
         workflow_run_data = workflow_run.to_dict()
@@ -876,6 +876,7 @@ async def get_file_upload_url(
             region=s3_config.region,
             access_key=s3_config.access_key,
             secret_key=s3_config.secret_key,
+            session_token=s3_config.session_token,
         )
 
         # if public:

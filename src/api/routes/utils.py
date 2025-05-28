@@ -41,6 +41,7 @@ from uuid import UUID
 import random
 from cryptography.fernet import Fernet
 import base64
+import boto3
 
 # Get JWT secret from environment variable
 JWT_SECRET = os.getenv("JWT_SECRET")
@@ -377,19 +378,20 @@ def clean_up_outputs(outputs: List):
     return outputs
 
 
-def post_process_outputs(outputs, user_settings):
+async def post_process_outputs(outputs, user_settings):
     for output in outputs:
         if output.data and isinstance(output.data, dict):
-            post_process_output_data(output.data, user_settings)
+            await post_process_output_data(output.data, user_settings)
 
 
-def post_process_output_data(data, user_settings):
-    s3_config = retrieve_s3_config(user_settings)
+async def post_process_output_data(data, user_settings):
+    s3_config = await retrieve_s3_config(user_settings)
 
     # public = s3_config.public
     region = s3_config.region
     access_key = s3_config.access_key
     secret_key = s3_config.secret_key
+    session_token = s3_config.session_token
 
     for upload_type in upload_types:
         if upload_type in data:
@@ -403,6 +405,7 @@ def post_process_output_data(data, user_settings):
                             region,
                             access_key,
                             secret_key,
+                            session_token
                         )
     return data
 
@@ -530,7 +533,7 @@ async def get_user_settings(request: Request, db: AsyncSession):
 
 
 def get_temporary_download_url(
-    url: str, region: str, access_key: str, secret_key: str, expiration: int = 3600
+    url: str, region: str, access_key: str, secret_key: str, session_token: str, expiration: int = 3600
 ) -> str:
     # Parse the URL
     parsed_url = urlparse(url)
@@ -546,6 +549,7 @@ def get_temporary_download_url(
         region=region,
         access_key=access_key,
         secret_key=secret_key,
+        session_token=session_token,
         expiration=expiration,
     )
 
@@ -556,6 +560,7 @@ def generate_presigned_download_url(
     region: str,
     access_key: str,
     secret_key: str,
+    session_token: str,
     expiration: int = 3600,
 ):
     s3_client = boto3.client(
@@ -563,6 +568,7 @@ def generate_presigned_download_url(
         region_name=region,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
+        aws_session_token=session_token,
         config=Config(signature_version="s3v4"),
     )
 
@@ -587,6 +593,7 @@ def generate_presigned_url(
     region: str,
     access_key: str,
     secret_key: str,
+    session_token: str,
     expiration=3600,
     http_method="PUT",
     size=None,
@@ -598,6 +605,7 @@ def generate_presigned_url(
         region_name=region,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
+        aws_session_token=session_token,
         config=Config(signature_version="s3v4"),
     )
     params = {
@@ -633,6 +641,7 @@ def delete_s3_object(
     region: str,
     access_key: str,
     secret_key: str,
+    session_token: str,
 ):
     """
     Delete an object from an S3 bucket
@@ -653,6 +662,7 @@ def delete_s3_object(
             region_name=region,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
+            aws_session_token=session_token,
             config=Config(signature_version="s3v4"),
         )
         

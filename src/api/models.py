@@ -551,6 +551,7 @@ class UserSettings(SerializableMixin, Base):
     s3_secret_access_key = Column(String)
     encrypted_s3_key = Column(String)
     s3_bucket_name = Column(String)
+    assumed_role_arn = Column(String)
     s3_region = Column(String)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

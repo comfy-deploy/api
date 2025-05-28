@@ -12,4 +12,4 @@ async def get_s3_config(
 ) -> S3Config:
     user_settings = await get_user_settings(request, db)
 
-    return retrieve_s3_config(user_settings)
+    return await retrieve_s3_config(user_settings)

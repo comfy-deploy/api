@@ -1078,6 +1078,7 @@ export const userSettingsTable = dbSchema.table("user_settings", {
     custom_output_bucket: boolean("custom_output_bucket").default(false),
     s3_access_key_id: text("s3_access_key_id"),
     s3_secret_access_key: text("s3_secret_access_key"),
+    assumed_role_arn: text("assumed_role_arn"),
     encrypted_s3_key: text("encrypted_s3_key"),
     s3_bucket_name: text("s3_bucket_name"),
     s3_region: text("s3_region"),
@@ -1118,6 +1119,7 @@ export const updateUserSettingsSchema = createInsertSchema(userSettingsTable, {
     s3_secret_access_key: z.string().optional().describe("S3 Secret Access Key"),
     s3_bucket_name: z.string().optional().describe("S3 Bucket Name"),
     encrypted_s3_key: z.string().optional(),
+    assumed_role_arn: z.string().optional().describe("Assumed Role ARN"),
     s3_region: z.string().optional().describe("S3 Region"),
     spend_limit: z.coerce
         .number()
@@ -1136,7 +1138,8 @@ export const updateUserSettingsSchema = createInsertSchema(userSettingsTable, {
     s3_bucket_name: true,
     s3_region: true,
     spend_limit: true,
-    // max_spend_limit: true,
+    max_spend_limit: true,
+    assumed_role_arn: true,
     hugging_face_token: true,
 });
 

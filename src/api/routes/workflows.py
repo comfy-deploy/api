@@ -116,7 +116,7 @@ async def get_workflows(
 
     for workflow in workflows:
         if "latest_output" in workflow and workflow["latest_output"]:
-            post_process_output_data(workflow["latest_output"], user_settings)
+            await post_process_output_data(workflow["latest_output"], user_settings)
         user_icon = user_icons.get(str(workflow["user_id"]))
         workflow["user_icon"] = user_icon.image_url if user_icon else None
 

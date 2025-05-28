@@ -293,7 +293,7 @@ async def stream_progress(
 
                         run = cast(WorkflowRun, run)
                         ensure_run_timeout(run)
-                        post_process_outputs(run.outputs, user_settings)
+                        await post_process_outputs(run.outputs, user_settings)
                         # Convert the run to a dictionary and remove the run_log
                         # run_dict = {k: v for k, v in vars(run).items() if k != "run_log"}
                         run_dict = run.to_dict()

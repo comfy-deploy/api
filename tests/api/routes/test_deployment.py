@@ -217,3 +217,60 @@ async def test_run_deployment_on_a_wrong_user(
         assert response.status_code == 404, "Expected 403 status code for wrong user"
 
 
+@pytest.mark.asyncio
+async def test_cancel_run_with_webhook(
+    app, paid_user, test_create_workflow_deployment
+):
+    """Test cancelling a run with webhook notifications"""
+    deployment_id = test_create_workflow_deployment
+
+    async with create_webhook_server() as (webhook_url, received_webhooks):
+        webhook_url_with_params = f"{webhook_url}?target_events=run.updated"
+
+        async with get_test_client(app, paid_user) as client:
+            response = await client.post(
+                "/run/deployment/sync",
+                json={
+                    "deployment_id": deployment_id,
+                    "webhook": webhook_url_with_params,
+                },
+            )
+            assert response.status_code == 200
+            run_id = response.json()[0]["run_id"]
+            assert run_id is not None
+
+            # Wait for initial webhooks to be received
+            for _ in range(30):
+                if len(received_webhooks) >= 1:
+                    break
+                await asyncio.sleep(0.1)
+
+            received_webhooks.clear()
+
+            cancel_response = await client.post(f"/run/{run_id}/cancel")
+            assert cancel_response.status_code == 200
+            assert cancel_response.json()["status"] == "success"
+
+            # Wait for cancel webhook to be received
+            for _ in range(30):
+                if len(received_webhooks) >= 1:
+                    break
+                await asyncio.sleep(0.1)
+
+            # Verify we received webhooks
+            assert len(received_webhooks) > 0, "Did not receive any webhooks after cancellation"
+
+            # Verify we received run.updated events with cancelled status
+            cancel_webhooks = [
+                w for w in received_webhooks 
+                if w["event_type"] == "run.updated" and w["status"] == "cancelled"
+            ]
+            
+            assert len(cancel_webhooks) > 0, "No cancelled status webhook received"
+
+            # Verify the structure of cancel webhooks
+            for webhook in cancel_webhooks:
+                assert webhook["run_id"] == run_id, "Run ID mismatch in webhook"
+                assert webhook["status"] == "cancelled", "Status should be cancelled"
+
+

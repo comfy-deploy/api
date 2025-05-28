@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from fastapi import BackgroundTasks
 import fal_client
-from .internal import insert_to_clickhouse
+from .internal import insert_to_clickhouse, send_webhook
 from .utils import (
     apply_org_check_direct,
     clean_up_outputs,
@@ -175,7 +175,7 @@ async def get_run(request: Request, run_id: UUID, queue_position: bool = False, 
     user_settings = await get_user_settings(request, db)
     ensure_run_timeout(run)
     clean_up_outputs(run.outputs)
-    post_process_outputs(run.outputs, user_settings)
+    await post_process_outputs(run.outputs, user_settings)
     # Convert the run to a dictionary and remove the run_log
     # run_dict = {k: v for k, v in vars(run).items() if k != "run_log"}
 
@@ -493,7 +493,9 @@ async def create_run_stream(
 async def cancel_run(
     request: Request,
     run_id: str,
-    db: AsyncSession = Depends(get_db)
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    client: AsyncClient = Depends(get_clickhouse_client)
 ):
     try:
         # Cancel the modal function
@@ -535,6 +537,29 @@ async def cancel_run(
                 )
                 await db.execute(stmt)
                 await db.commit()
+                existing_run = await db.execute(
+                    select(WorkflowRun).where(WorkflowRun.id == run_id)
+                )
+                workflow_run = existing_run.scalar_one_or_none()
+                
+                outputs_query = select(WorkflowRunOutput).where(
+                    WorkflowRunOutput.run_id == run_id
+                )
+                outputs_result = await db.execute(outputs_query)
+                outputs = outputs_result.scalars().all()
+                
+                workflow_run_data = workflow_run.to_dict()
+                workflow_run_data["outputs"] = [output.to_dict() for output in outputs]
+                
+                if workflow_run.webhook is not None:
+                    asyncio.create_task(
+                        send_webhook(
+                            workflow_run=workflow_run_data,
+                            updated_at=now,
+                            run_id=workflow_run.id,
+                            client=client,
+                        )
+                    )
 
         return {"status": "success", "message": "Function cancelled"}
     except Exception as e:
@@ -850,7 +875,7 @@ async def run_model(
             await db.refresh(newOutput)
 
             output_dict = newOutput.to_dict()
-            post_process_output_data(output_dict["data"], user_settings)
+            await post_process_output_data(output_dict["data"], user_settings)
 
             update_status(run_id, "success", background_tasks, client, workflow_run)
 
@@ -1385,7 +1410,7 @@ async def _create_run(
 
                     user_settings = await get_user_settings(request, db)
 
-                    post_process_outputs([output], user_settings)
+                    await post_process_outputs([output], user_settings)
 
                     if data.execution_mode == "sync_first_result":
                         if output and output.data and isinstance(output.data, dict):
@@ -1424,7 +1449,7 @@ async def _create_run(
 
                     user_settings = await get_user_settings(request, db)
                     clean_up_outputs(outputs)
-                    post_process_outputs(outputs, user_settings)
+                    await post_process_outputs(outputs, user_settings)
 
                     return [output.to_dict() for output in outputs]
             elif data.execution_mode == "stream":
@@ -1469,7 +1494,7 @@ async def _create_run(
                                                 logger.info(
                                                     data.get("data", {}).get("output")
                                                 )
-                                                post_process_output_data(
+                                                await post_process_output_data(
                                                     data.get("data", {}).get("output"),
                                                     user_settings,
                                                 )

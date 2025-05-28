@@ -150,6 +150,11 @@ async def create_api_key(request: Request, db: AsyncSession):
 
 # Dependency to get user data from token
 async def get_current_user(request: Request):
+    # Check for Clerk session cookie
+    session_token = request.cookies.get("__session")
+
+    # print(f"Session token: {session_token}")
+    
     # Check for cd_token in query parameters
     # Coming from native run
     cd_token = request.query_params.get("cd_token")
@@ -157,7 +162,10 @@ async def get_current_user(request: Request):
     # Check for Authorization header
     auth_header = request.headers.get("Authorization")
 
-    if cd_token:
+    token = None
+    if session_token:
+        token = session_token
+    elif cd_token:
         token = cd_token
     elif auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]

@@ -548,7 +548,8 @@ async def handle_file_download(
                             object_key=s3_temp_object["object_key"],
                             region=s3_config.region,
                             access_key=s3_config.access_key,
-                            secret_key=s3_config.secret_key
+                            secret_key=s3_config.secret_key,
+                            session_token=s3_config.session_token
                         )
                         logger.info(f"Deleted temporary S3 object: {s3_temp_object['object_key']}")
                     except Exception as e:
@@ -1373,7 +1374,7 @@ async def generate_upload_url(
     """Generate a presigned URL for direct file uploads to S3"""
     try:
         s3_config = await get_s3_config(request, db)
-        
+        session_token = s3_config.session_token
         bucket = s3_config.bucket
         region = s3_config.region
         access_key = s3_config.access_key
@@ -1398,7 +1399,8 @@ async def generate_upload_url(
             expiration=3600,  # 1 hour expiration
             http_method="PUT",
             content_type=body.contentType,
-            public=False  # Keep uploads private
+            public=False,  # Keep uploads private
+            session_token=session_token
         )
         
         if not presigned_url:
@@ -1491,7 +1493,7 @@ async def add_model(
                 region = s3_config.region
                 access_key = s3_config.access_key
                 secret_key = s3_config.secret_key
-                
+                session_token = s3_config.session_token
                 if not all([bucket, region, access_key, secret_key]):
                     raise HTTPException(status_code=500, detail="S3 configuration is incomplete")
                 
@@ -1501,6 +1503,7 @@ async def add_model(
                     region=region,
                     access_key=access_key,
                     secret_key=secret_key,
+                    session_token=session_token,
                     expiration=3600,
                     http_method="GET",
                     public=False

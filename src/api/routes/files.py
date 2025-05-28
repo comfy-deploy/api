@@ -151,6 +151,7 @@ async def upload_file(
     region = s3_config.region
     access_key = s3_config.access_key
     secret_key = s3_config.secret_key
+    session_token = s3_config.session_token
 
     # File size check
     file_size = file.size
@@ -183,6 +184,7 @@ async def upload_file(
         region_name=region,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
+        aws_session_token=session_token,
         config=Config(signature_version="s3v4"),
     ) as s3_client:
         try:
@@ -323,6 +325,7 @@ async def list_assets(
                     region=s3_config.region,
                     access_key=s3_config.access_key,
                     secret_key=s3_config.secret_key,
+                    session_token=s3_config.session_token,
                     expiration=3600,
                 )
     
@@ -358,6 +361,7 @@ async def delete_asset(
         region = s3_config.region
         access_key = s3_config.access_key
         secret_key = s3_config.secret_key
+        session_token = s3_config.session_token
 
         # Prefix the path with 'assets/' for S3 operations
         s3_path = f"assets/{asset.path}"
@@ -367,6 +371,7 @@ async def delete_asset(
             region_name=region,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
+            aws_session_token=session_token,
         ) as s3_client:
             await s3_client.delete_object(Bucket=bucket, Key=s3_path)
 
@@ -399,6 +404,7 @@ async def upload_asset_file(
     region = s3_config.region
     access_key = s3_config.access_key
     secret_key = s3_config.secret_key
+    session_token = s3_config.session_token
     public = s3_config.public
 
     # File size check
@@ -433,6 +439,7 @@ async def upload_asset_file(
         region_name=region,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
+        aws_session_token=session_token,
         config=Config(signature_version="s3v4"),
     ) as s3_client:
         try:
@@ -494,7 +501,7 @@ async def get_asset_upload_url(
 ):
     s3_config = await get_s3_config(request, db)
     public = s3_config.public
-    
+    session_token = s3_config.session_token
     # Generate object key
     file_extension = os.path.splitext(file_name)[1]
     file_id = new_id(get_id_prefix_from_type(type))
@@ -517,6 +524,7 @@ async def get_asset_upload_url(
         region=s3_config.region,
         access_key=s3_config.access_key,
         secret_key=s3_config.secret_key,
+        session_token=session_token,
     )
     
     return {
@@ -593,7 +601,7 @@ async def search_assets(
     
     # Get S3 config to handle URLs if needed
     s3_config = await get_s3_config(request, db)
-    
+    session_token = s3_config.session_token
     # Generate temporary URLs for private files if needed
     if s3_config and not s3_config.public:
         for asset in assets:
@@ -603,6 +611,7 @@ async def search_assets(
                     region=s3_config.region,
                     access_key=s3_config.access_key,
                     secret_key=s3_config.secret_key,
+                    session_token=session_token,
                     expiration=3600,
                 )
     
@@ -622,13 +631,15 @@ async def get_asset(
         raise HTTPException(status_code=404, detail="Asset not found")
     
     s3_config = await get_s3_config(request, db)
-
+    session_token = s3_config.session_token
+    
     if s3_config and not s3_config.public and asset.url:
         asset.url = get_temporary_download_url(
             asset.url,
             region=s3_config.region,
             access_key=s3_config.access_key,
             secret_key=s3_config.secret_key,
+            session_token=session_token,
             expiration=3600,
         )
     

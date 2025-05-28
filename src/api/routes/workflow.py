@@ -401,7 +401,7 @@ async def get_all_runs_v1(
     if with_outputs:  # Only process outputs if they were loaded
         for run in runs:
             if run.outputs:
-                post_process_outputs(run.outputs, user_settings)
+                await post_process_outputs(run.outputs, user_settings)
 
     runs_data = []
     for run in runs:
@@ -456,7 +456,7 @@ async def get_latest_run(
 
     # Process the outputs
     if outputs:
-        post_process_outputs(outputs, user_settings)
+        await post_process_outputs(outputs, user_settings)
 
     result = latest_run.to_dict()
     result["outputs"] = [output.to_dict() for output in outputs]
@@ -714,7 +714,7 @@ async def get_workflows_gallery(
     user_settings = await get_user_settings(request, db)
     for output in outputs:
         if output["data"]:
-            post_process_output_data(output["data"], user_settings)
+            await post_process_output_data(output["data"], user_settings)
 
     return JSONResponse(
         status_code=200, content=json.loads(json.dumps(outputs, cls=CustomJSONEncoder))

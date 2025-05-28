@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from typing import Optional
@@ -33,6 +34,7 @@ from api.routes import (
     search,
     form,
     admin,
+    image_optimization,
 )
 from api.modal import builder
 from api.models import APIKey
@@ -63,13 +65,14 @@ logtail_source_token = os.getenv("LOGTAIL_SOURCE_TOKEN")
 
 if logtail_host and logtail_source_token:
     handler = LogtailHandler(
-        source_token=logtail_source_token, 
+        source_token=logtail_source_token,
         host=logtail_host,
     )
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     logger.handlers = []
     logger.addHandler(handler)
+
 
 class NullPropagator(TextMapPropagator):
     def extract(self, *args, **kwargs):
@@ -89,7 +92,7 @@ logfire.configure(
     service_name="comfydeploy-api",
     # additional_span_processors=[span_processor]
 )
-    
+
 logging.basicConfig(level=logging.INFO)
 
 # logger = logging.getLogger(__name__)
@@ -127,6 +130,7 @@ api_router.include_router(platform.router)
 api_router.include_router(search.router)
 api_router.include_router(form.router)
 api_router.include_router(admin.router)  # Add the admin router to internal API
+api_router.include_router(image_optimization.router)
 
 # This is for the docs generation
 public_api_router.include_router(run.router)
@@ -137,6 +141,7 @@ public_api_router.include_router(deployments.router)
 public_api_router.include_router(files.router)
 public_api_router.include_router(models.router)
 public_api_router.include_router(search.router)
+public_api_router.include_router(image_optimization.router)
 # public_api_router.include_router(platform.router)
 # public_api_router.include_router(run.webhook_router)
 
@@ -153,10 +158,26 @@ app.include_router(api_router, prefix="/api")  # Add the prefix here instead
 app.add_middleware(SubscriptionMiddleware)
 app.add_middleware(AuthMiddleware)
 
+# Get frontend URL from environment variable, default to localhost:3000 for development
+
+allow_origins = []
+
+if os.getenv("ENV") == "development":
+    allow_origins.append("http://localhost:3001")
+else:
+    allow_origins.extend(
+        [
+            # Production
+            "https://app.comfydeploy.com",
+            # Staging
+            "https://staging.app.comfydeploy.com",
+        ]
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=False,
+    allow_origins=allow_origins,  # Allow all subdomains of comfydeploy.com
+    allow_credentials=True,  # Allow credentials (cookies)
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
@@ -165,6 +186,3 @@ logfire.instrument_fastapi(app)
 logfire.instrument_sqlalchemy(
     engine=engine.sync_engine,
 )
-
-
-
