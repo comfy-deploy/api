@@ -630,11 +630,8 @@ async def build_logic(item: BuildMachineItem):
             "memory_limit": item.memory_limit
         }
 
-        config_file_path = os.path.abspath(f"{folder_path}/cd_config.py")
-        print(f"Debug: Opening config file at: {config_file_path}")
-
-        if os.environ.get("TAILSCALE_AUTHKEY", None) is not None:
-            config["TAILSCALE_AUTHKEY"] = os.environ.get("TAILSCALE_AUTHKEY", None)
+        # if os.environ.get("TAILSCALE_AUTHKEY", None) is not None:
+        #     config["TAILSCALE_AUTHKEY"] = os.environ.get("TAILSCALE_AUTHKEY", None)
 
         if item.deps != None:
             config["deps"] = item.deps
@@ -642,29 +639,46 @@ async def build_logic(item: BuildMachineItem):
         if item.docker_commands != None:
             config["docker_commands"] = item.docker_commands
 
-        # with open(f"{folder_path}/config.py", "w") as f:
-        #     f.write("config = " + json.dumps(config))
-
-        with open(f"{folder_path}/cd_config.py", "w") as f:
-            f.write("config = {\n")
-            for key, value in config.items():
-                if isinstance(value, str):
-                    f.write(f"    '{key}': '{value}',\n")
-                else:
-                    f.write(f"    '{key}': {value},\n")
-            f.write("}")
-
-        if item.snapshot != None:
-            with open(f"{folder_path}/data/snapshot.json", "w") as f:
-                f.write(item.snapshot.json())
-
-        with open(f"{folder_path}/data/models.json", "w") as f:
-            if item.models != None:
-                models_json_list = [model.dict() for model in item.models]
-                models_json_string = json.dumps(models_json_list)
-                f.write(models_json_string)
+        # Instead of creating cd_config.py, modify my_app.py directly
+        my_app_path = f"{folder_path}/my_app.py"
+        
+        # Read the original my_app.py content
+        with open(my_app_path, "r") as f:
+            my_app_content = f.read()
+        
+        # Generate the config dictionary string
+        config_lines = ["config = {"]
+        for key, value in config.items():
+            if isinstance(value, str):
+                config_lines.append(f"    '{key}': '{value}',")
             else:
-                f.write("[]")
+                config_lines.append(f"    '{key}': {value},")
+        config_lines.append("}")
+        config_string = "\n".join(config_lines)
+        
+        # Replace the import statement with the actual config
+        modified_content = my_app_content.replace(
+            "from cd_config import config",
+            config_string
+        )
+        
+        # Write the modified content back to my_app.py
+        with open(my_app_path, "w") as f:
+            f.write(modified_content)
+        
+        print(f"Debug: Modified my_app.py with inline config")
+
+        # if item.snapshot != None:
+        #     with open(f"{folder_path}/data/snapshot.json", "w") as f:
+        #         f.write(item.snapshot.json())
+
+        # with open(f"{folder_path}/data/models.json", "w") as f:
+        #     if item.models != None:
+        #         models_json_list = [model.dict() for model in item.models]
+        #         models_json_string = json.dumps(models_json_list)
+        #         f.write(models_json_string)
+        #     else:
+        #         f.write("[]")
 
         # os.chdir(folder_path)
         # process = subprocess.Popen(f"modal deploy {folder_path}/app.py", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
