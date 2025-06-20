@@ -422,6 +422,8 @@ async def get_deployments(
     environment: Optional[DeploymentEnvironment] = None,
     # Fluid deployment meaning they are modal app per deployment
     is_fluid: bool = False,
+    page_size: Optional[int] = None,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -445,6 +447,9 @@ async def get_deployments(
             query = query.where(Deployment.environment == environment)
 
         query = query.apply_org_check(request)
+
+        if page_size is not None:
+            query = query.paginate(page_size, offset)
 
         result = await db.execute(query)
         deployments = result.scalars().all()
