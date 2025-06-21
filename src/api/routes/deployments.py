@@ -34,6 +34,7 @@ import asyncio
 from nanoid import generate
 import re
 from api.utils.storage_helper import get_s3_config
+from api.utils.retrieve_s3_config_helper import retrieve_s3_config
 
 logger = logging.getLogger(__name__)
 
@@ -576,9 +577,34 @@ async def get_share_deployment(
     if deployment_dict.get("workflow"):
         cover_image = deployment_dict["workflow"].get("cover_image")
         if cover_image:
-            deployment_dict["workflow"]["cover_url"] = await build_cover_url(
-                request, db, cover_image
-            )
+            if hasattr(request.state, "current_user"):
+                deployment_dict["workflow"]["cover_url"] = await build_cover_url(
+                    request, db, cover_image
+                )
+            else:
+                s3_config = await retrieve_s3_config(None)
+                composed_endpoint = (
+                    f"https://{s3_config.bucket}.s3.{s3_config.region}.amazonaws.com"
+                )
+
+                if cover_image.startswith("http://") or cover_image.startswith(
+                    "https://"
+                ):
+                    url = cover_image
+                else:
+                    url = f"{composed_endpoint}/{cover_image}"
+
+                if not s3_config.public:
+                    url = get_temporary_download_url(
+                        url,
+                        region=s3_config.region,
+                        access_key=s3_config.access_key,
+                        secret_key=s3_config.secret_key,
+                        session_token=s3_config.session_token,
+                        expiration=3600,
+                    )
+
+                deployment_dict["workflow"]["cover_url"] = url
     deployment_dict["input_types"] = inputs
     deployment_dict["output_types"] = outputs
 
