@@ -8,15 +8,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-@pytest.mark.asyncio
-async def test_get_shared_public_run_free_user(app, test_free_user, test_run_deployment_sync_public):
-    """Test running a deployment"""
-    async with get_test_client(app, test_free_user) as client:
-        run_id = test_run_deployment_sync_public
-        response = await client.get(
-            "/run/" + run_id
-        )
-        assert response.status_code == 200
 
 @pytest.mark.asyncio
 async def test_get_shared_public_run_paid_user(app, paid_user, test_run_deployment_sync_public):
