@@ -16,6 +16,7 @@ import dub
 import logging
 from typing import Optional
 
+
 # Replace the module-level initialization with a singleton pattern
 class DubClient:
     _instance = None
@@ -29,6 +30,7 @@ class DubClient:
                 return None
             cls._instance = dub.Dub(token=dub_api_key)
         return cls._instance
+
 
 def _check_dub_client() -> bool:
     client = DubClient.get_instance()
@@ -73,7 +75,9 @@ async def get_dub_link(slug: str) -> Optional[str]:
         return None
 
     try:
-        res = await DubClient.get_instance().links.get_async(request={"external_id": f"ext_{slug}"})
+        res = await DubClient.get_instance().links.get_async(
+            request={"external_id": f"ext_{slug}"}
+        )
         if res is not None:
             logging.info(f"link found: {res.short_link}")
             return res
@@ -118,11 +122,13 @@ async def update_dub_link(link_id: str, url: str, slug: str) -> Optional[str]:
 
 router = APIRouter()
 
+
 class OutputShareCreate(BaseModel):
     run_id: uuid.UUID
     output_id: uuid.UUID
     output_type: str = "other"
     visibility: str = "private"
+
 
 class OutputShareResponse(BaseModel):
     id: uuid.UUID
@@ -136,27 +142,39 @@ class OutputShareResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 def determine_output_type(output_data: dict) -> str:
     """Determine output type based on output data"""
     if not output_data:
         return "other"
 
-    if any(key.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')) for key in output_data.keys() if isinstance(key, str)):
+    if any(
+        key.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+        for key in output_data.keys()
+        if isinstance(key, str)
+    ):
         return "image"
 
-    if any(key.lower().endswith(('.mp4', '.avi', '.mov', '.webm')) for key in output_data.keys() if isinstance(key, str)):
+    if any(
+        key.lower().endswith((".mp4", ".avi", ".mov", ".webm"))
+        for key in output_data.keys()
+        if isinstance(key, str)
+    ):
         return "video"
 
-    if any(key.lower().endswith(('.obj', '.fbx', '.gltf', '.glb', '.ply')) for key in output_data.keys() if isinstance(key, str)):
+    if any(
+        key.lower().endswith((".obj", ".fbx", ".gltf", ".glb", ".ply"))
+        for key in output_data.keys()
+        if isinstance(key, str)
+    ):
         return "3d"
 
     return "other"
 
+
 @router.post("/share/output", response_model=OutputShareResponse)
 async def create_output_share(
-    share_data: OutputShareCreate,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
+    share_data: OutputShareCreate, request: Request, db: AsyncSession = Depends(get_db)
 ):
     user = getattr(request.state, "current_user", None)
     if not user:
@@ -190,6 +208,15 @@ async def create_output_share(
     if not output:
         raise HTTPException(status_code=404, detail="Output not found")
 
+    # Check if this output was already shared
+    duplicate_query = select(OutputShare).where(
+        OutputShare.output_id == share_data.output_id
+    )
+    duplicate_result = await db.execute(duplicate_query)
+    existing_share = duplicate_result.scalar_one_or_none()
+    if existing_share:
+        raise HTTPException(status_code=400, detail="Output already shared")
+
     if share_data.output_type == "other":
         detected_type = determine_output_type(output.data or {})
         share_data.output_type = detected_type
@@ -201,7 +228,7 @@ async def create_output_share(
         output_id=share_data.output_id,
         output_data=output.data or {},
         output_type=share_data.output_type,
-        visibility=share_data.visibility
+        visibility=share_data.visibility,
     )
 
     db.add(output_share)
@@ -218,16 +245,19 @@ async def create_output_share(
         output_type=output_share.output_type,
         visibility=output_share.visibility,
         created_at=output_share.created_at,
-        updated_at=output_share.updated_at
+        updated_at=output_share.updated_at,
     )
+
 
 @router.get("/share/output", response_model=List[OutputShareResponse])
 async def list_output_shares(
     request: Request,
     output_type: Optional[str] = Query(None, description="Filter by output type"),
     visibility: Optional[str] = Query(None, description="Filter by visibility"),
-    include_public: bool = Query(True, description="Include public shares for authenticated users"),
-    db: AsyncSession = Depends(get_db)
+    include_public: bool = Query(
+        True, description="Include public shares for authenticated users"
+    ),
+    db: AsyncSession = Depends(get_db),
 ):
     user = getattr(request.state, "current_user", None)
 
@@ -237,16 +267,11 @@ async def list_output_shares(
     if user:
         org_condition = and_(
             OutputShare.user_id == user["user_id"],
-            or_(
-                OutputShare.visibility == "private",
-                OutputShare.visibility == "link"
-            )
+            or_(OutputShare.visibility == "private", OutputShare.visibility == "link"),
         )
 
         if include_public:
-            conditions.append(
-                or_(org_condition, OutputShare.visibility == "public")
-            )
+            conditions.append(or_(org_condition, OutputShare.visibility == "public"))
         else:
             conditions.append(org_condition)
     else:
@@ -277,24 +302,27 @@ async def list_output_shares(
             output_type=share.output_type,
             visibility=share.visibility,
             created_at=share.created_at,
-            updated_at=share.updated_at
+            updated_at=share.updated_at,
         )
         for share in shares
     ]
 
+
 @router.get("/share/output/{share_id}")
 async def get_shared_output(
-    share_id: uuid.UUID,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
+    share_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
 ):
     user = getattr(request.state, "current_user", None)
 
-    query = select(OutputShare).options(
-        joinedload(OutputShare.run),
-        joinedload(OutputShare.user),
-        joinedload(OutputShare.output)
-    ).where(OutputShare.id == share_id)
+    query = (
+        select(OutputShare)
+        .options(
+            joinedload(OutputShare.run),
+            joinedload(OutputShare.user),
+            joinedload(OutputShare.output),
+        )
+        .where(OutputShare.id == share_id)
+    )
 
     result = await db.execute(query)
     share = result.scalar_one_or_none()
@@ -321,30 +349,30 @@ async def get_shared_output(
             output_type=share.output_type,
             visibility=share.visibility,
             created_at=share.created_at,
-            updated_at=share.updated_at
+            updated_at=share.updated_at,
         ),
-        "run": {
-            "id": share.run.id,
-            "status": share.run.status,
-            "created_at": share.run.created_at
-        } if share.run else None
+        "run": (
+            {
+                "id": share.run.id,
+                "status": share.run.status,
+                "created_at": share.run.created_at,
+            }
+            if share.run
+            else None
+        ),
     }
+
 
 @router.delete("/share/output/{share_id}")
 async def delete_output_share(
-    share_id: uuid.UUID,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
+    share_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
 ):
     user = getattr(request.state, "current_user", None)
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     query = select(OutputShare).where(
-        and_(
-            OutputShare.id == share_id,
-            OutputShare.user_id == user["user_id"]
-        )
+        and_(OutputShare.id == share_id, OutputShare.user_id == user["user_id"])
     )
     result = await db.execute(query)
     share = result.scalar_one_or_none()
