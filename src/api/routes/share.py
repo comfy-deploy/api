@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 
 from api.database import get_db
-from api.models import OutputShare, WorkflowRun, User, WorkflowRunOutput
+from api.models import OutputShare, WorkflowRun, User, WorkflowRunOutput, Deployment
 from api.routes.utils import select
 
 import os
@@ -74,8 +74,9 @@ async def get_dub_link(slug: str) -> Optional[str]:
     if not _check_dub_client():
         return None
 
+    client = DubClient.get_instance()
     try:
-        res = await DubClient.get_instance().links.get_async(
+        res = await client.links.get_async(
             request={"external_id": f"ext_{slug}"}
         )
         if res is not None:
@@ -121,6 +122,51 @@ async def update_dub_link(link_id: str, url: str, slug: str) -> Optional[str]:
 
 
 router = APIRouter()
+
+
+class StudioUrlResponse(BaseModel):
+    studio_url: str
+    api_url: str
+
+
+def get_studio_url_from_api_url(api_url: str, share_slug: str) -> str:
+    """
+    Convert API URL to studio URL based on environment.
+    
+    Examples:
+    - api.comfydeploy.com -> studio.comfydeploy.com
+    - staging.api.comfydeploy.com -> staging.studio.comfydeploy.com
+    """
+    if not api_url:
+        raise ValueError("API URL is required")
+    
+    # Remove protocol if present
+    if api_url.startswith("https://"):
+        api_url = api_url[8:]
+    elif api_url.startswith("http://"):
+        api_url = api_url[7:]
+    
+    # Remove trailing slashes
+    api_url = api_url.rstrip("/")
+    
+    # Handle different environments
+    if api_url.startswith("staging.api."):
+        # staging.api.comfydeploy.com -> staging.studio.comfydeploy.com
+        studio_domain = api_url.replace("staging.api.", "staging.studio.")
+    elif api_url.startswith("api."):
+        # api.comfydeploy.com -> studio.comfydeploy.com
+        studio_domain = api_url.replace("api.", "studio.")
+    else:
+        # For local development or other environments, assume similar pattern
+        studio_domain = api_url.replace("api", "studio")
+    
+    # Split the share_slug to get username and slug parts
+    if "_" in share_slug:
+        username, slug_part = share_slug.split("_", 1)
+        return f"https://{studio_domain}/share/playground/{username}/{slug_part}"
+    else:
+        # Fallback if slug doesn't contain underscore
+        return f"https://{studio_domain}/share/playground/{share_slug}"
 
 
 class OutputShareCreate(BaseModel):
@@ -416,3 +462,53 @@ async def delete_output_share(
     await db.commit()
 
     return {"message": "Output share deleted successfully"}
+
+
+@router.get("/share/deployment/{deployment_id}/studio-url", response_model=StudioUrlResponse)
+async def get_deployment_studio_url(
+    deployment_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get the studio URL for a deployment based on the current environment.
+    
+    This endpoint converts a deployment ID to the proper studio URL by:
+    1. Finding the deployment's share_slug
+    2. Determining the current environment from CURRENT_API_URL
+    3. Constructing the appropriate studio URL
+    """
+    # Query the deployment by ID
+    query = select(Deployment).where(Deployment.id == deployment_id)
+    result = await db.execute(query)
+    deployment = result.scalar_one_or_none()
+    
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    
+    if not deployment.share_slug:
+        raise HTTPException(
+            status_code=400, 
+            detail="Deployment does not have a share slug. Only shared deployments can be accessed in studio."
+        )
+    
+    # Get the current API URL from environment
+    current_api_url = os.getenv("CURRENT_API_URL")
+    if not current_api_url:
+        raise HTTPException(
+            status_code=500, 
+            detail="CURRENT_API_URL environment variable not set"
+        )
+    
+    try:
+        studio_url = get_studio_url_from_api_url(current_api_url, deployment.share_slug)
+        return StudioUrlResponse(
+            studio_url=studio_url,
+            api_url=current_api_url
+        )
+    except Exception as e:
+        logging.error(f"Error generating studio URL: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error generating studio URL: {str(e)}"
+        )
