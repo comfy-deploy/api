@@ -16,6 +16,38 @@ import dub
 import logging
 from typing import Optional
 
+router = APIRouter()
+public_router = APIRouter()
+
+
+class UserInfo(BaseModel):
+    """User authentication information extracted from request."""
+    is_authenticated: bool
+    user_id: Optional[str] = None
+    org_id: Optional[str] = None
+
+
+def get_user_info(request: Request) -> UserInfo:
+    """
+    Extract user information from request if authenticated.
+
+    Returns:
+        UserInfo object with authentication status and user details
+    """
+    if (
+        not hasattr(request, "state")
+        or not hasattr(request.state, "current_user")
+        or request.state.current_user is None
+    ):
+        return UserInfo(is_authenticated=False, user_id=None, org_id=None)
+
+    current_user = request.state.current_user
+    return UserInfo(
+        is_authenticated=True,
+        user_id=current_user.get("user_id"),
+        org_id=current_user.get("org_id"),
+    )
+
 
 # Replace the module-level initialization with a singleton pattern
 class DubClient:
@@ -119,9 +151,6 @@ async def update_dub_link(link_id: str, url: str, slug: str) -> Optional[str]:
         return res
     else:
         return None
-
-
-router = APIRouter()
 
 
 class StudioUrlResponse(BaseModel):
@@ -464,7 +493,7 @@ async def delete_output_share(
     return {"message": "Output share deleted successfully"}
 
 
-@router.get("/share/deployment/{deployment_id}/studio-url", response_model=StudioUrlResponse)
+@public_router.get("/share/deployment/{deployment_id}/studio-url", response_model=StudioUrlResponse)
 async def get_deployment_studio_url(
     deployment_id: uuid.UUID,
     request: Request,
@@ -477,14 +506,39 @@ async def get_deployment_studio_url(
     1. Finding the deployment's share_slug
     2. Determining the current environment from CURRENT_API_URL
     3. Constructing the appropriate studio URL
+    
+    Only allows deployments with environments: public-share, private-share, community-share
+    For private-share deployments, checks if user has matching org_id or user_id
     """
-    # Query the deployment by ID
-    query = select(Deployment).where(Deployment.id == deployment_id)
+    # Get user info for authorization
+    user_info = get_user_info(request)
+    
+    # Query the deployment by ID, only allowing share environments
+    query = (
+        select(Deployment)
+        .where(
+            Deployment.id == deployment_id,
+            Deployment.environment.in_(["public-share", "private-share", "community-share"])
+        )
+    )
     result = await db.execute(query)
     deployment = result.scalar_one_or_none()
     
     if not deployment:
         raise HTTPException(status_code=404, detail="Deployment not found")
+    
+    # Check authorization for private-share deployments
+    if deployment.environment == "private-share":
+        if not user_info.is_authenticated:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        # Check if user has access to this private deployment
+        if deployment.org_id is not None:
+            if deployment.org_id != user_info.org_id:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+        else:
+            if deployment.user_id != user_info.user_id:
+                raise HTTPException(status_code=401, detail="Unauthorized")
     
     if not deployment.share_slug:
         raise HTTPException(

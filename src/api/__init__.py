@@ -174,6 +174,7 @@ public_api_router.include_router(files.router)
 public_api_router.include_router(models.router)
 public_api_router.include_router(search.router)
 public_api_router.include_router(image_optimization.router)
+public_api_router.include_router(share.public_router)
 # public_api_router.include_router(platform.router)
 # public_api_router.include_router(run.webhook_router)
 
