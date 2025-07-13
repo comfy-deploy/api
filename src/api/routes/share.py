@@ -17,7 +17,6 @@ import logging
 from typing import Optional
 
 router = APIRouter()
-public_router = APIRouter()
 
 
 class UserInfo(BaseModel):
@@ -493,7 +492,7 @@ async def delete_output_share(
     return {"message": "Output share deleted successfully"}
 
 
-@public_router.get("/share/deployment/{deployment_id}/studio-url", response_model=StudioUrlResponse)
+@router.get("/share/deployment/{deployment_id}/studio-url", response_model=StudioUrlResponse)
 async def get_deployment_studio_url(
     deployment_id: uuid.UUID,
     request: Request,
