@@ -1983,7 +1983,7 @@ class _ComfyDeployRunner(BaseComfyDeployRunner):
 
         original_validate_prompt = execution.validate_prompt
 
-        def custom_validate_prompt(prompt):
+        def custom_validate_prompt(prompt, *args, **kwargs):
             if self.skip_workflow_api_validation:
                 outputs = set()
                 for x in prompt:
@@ -2030,7 +2030,7 @@ class _ComfyDeployRunner(BaseComfyDeployRunner):
                         good_outputs.add(o)
 
                 return (True, None, list(good_outputs), node_errors)
-            return original_validate_prompt(prompt)
+            return original_validate_prompt(prompt, *args, **kwargs)
 
         execution.validate_prompt = custom_validate_prompt
 
