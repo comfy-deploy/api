@@ -27,8 +27,9 @@ CREATE TABLE default.workflow_events
     `log` String,
 )
 ENGINE = MergeTree()
-ORDER BY (workflow_id, run_id, user_id)
-TTL toDateTime(timestamp) + INTERVAL 30 DAY DELETE
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (run_id, timestamp)
+TTL toDateTime(timestamp) + INTERVAL 14 DAY DELETE
 SETTINGS index_granularity = 8192;
 
 CREATE TABLE default.log_entries

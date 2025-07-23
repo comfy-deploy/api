@@ -62,6 +62,11 @@ async def get_clickhouse_client():
                 secure=False if os.getenv("CLICKHOUSE_HOST") in ["localhost", "host.docker.internal", "clickhouse"] else True,
                 pool_mgr=big_pool_mgr,
                 port=os.getenv("CLICKHOUSE_PORT", None),
+                settings={
+                    'max_execution_time': 5,
+                    'max_result_bytes': 1048576,
+                    'result_overflow_mode': 'break'
+                }
             )
         return clickhouse_client
     except Exception as e:

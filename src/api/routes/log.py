@@ -32,6 +32,7 @@ from api.models import (
     Workflow,
 )
 from api.database import get_db, get_clickhouse_client, get_db_context
+from api.utils.multi_level_cache import multi_level_cached
 from typing import Optional, Union, cast
 from typing import Dict, Any
 from uuid import UUID
@@ -46,6 +47,65 @@ import datetime as dt
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Log"])
+
+
+def build_log_cache_key(id_type: str, id_value: str, last_timestamp: str = None, log_level: str = None):
+    """Build cache key for log queries"""
+    key_parts = [f"logs:{id_type}:{id_value}"]
+    if last_timestamp:
+        key_parts.append(f"after:{last_timestamp}")
+    if log_level:
+        key_parts.append(f"level:{log_level}")
+    return ":".join(key_parts)
+
+
+def build_progress_cache_key(id_type: str, id_value: str, last_timestamp: str = None):
+    """Build cache key for progress queries"""
+    key_parts = [f"progress:{id_type}:{id_value}"]
+    if last_timestamp:
+        key_parts.append(f"after:{last_timestamp}")
+    return ":".join(key_parts)
+
+
+@multi_level_cached(
+    key_prefix="clickhouse_logs",
+    ttl_seconds=30,
+    redis_ttl_seconds=300,
+    version="1.0"
+)
+async def get_cached_logs(id_type: str, id_value: str, last_timestamp: str, log_level: str, client):
+    """Cached function to get logs from ClickHouse"""
+    query = f"""
+    SELECT timestamp, log_level, message
+    FROM log_entries
+    WHERE {id_type}_id = '{id_value}'
+    {f"AND timestamp > '{last_timestamp}'" if last_timestamp else ""}
+    {f"AND log_level = '{log_level}'" if log_level else ""}
+    ORDER BY timestamp ASC
+    LIMIT 100
+    """
+    result = await client.query(query)
+    return result.result_rows
+
+
+@multi_level_cached(
+    key_prefix="clickhouse_progress",
+    ttl_seconds=30,
+    redis_ttl_seconds=300,
+    version="1.0"
+)
+async def get_cached_progress(id_type: str, id_value: str, last_timestamp: str, client):
+    """Cached function to get progress from ClickHouse"""
+    query = f"""
+    SELECT run_id, workflow_id, workflow_version_id, machine_id, timestamp, progress, log, log_type
+    FROM workflow_events
+    WHERE {id_type}_id = '{id_value}'
+    {f"AND timestamp > toDateTime64('{last_timestamp}', 6)" if last_timestamp else ""}
+    ORDER BY timestamp ASC
+    LIMIT 100
+    """
+    result = await client.query(query)
+    return result.result_rows
 
 
 @router.get("/stream-logs")
@@ -149,26 +209,23 @@ async def stream_logs(
 
         # Stream logs
         last_timestamp = None
+        consecutive_empty_polls = 0
+        
         while True:
-            query = f"""
-            SELECT timestamp, log_level, message
-            FROM log_entries
-            WHERE {id_type}_id = '{id_value}'
-            {f"AND timestamp > '{last_timestamp}'" if last_timestamp else ""}
-            {f"AND log_level = '{log_level}'" if log_level else ""}
-            ORDER BY timestamp ASC
-            LIMIT 100
-            """
-            result = await client.query(query)
-            for row in result.result_rows:
-                timestamp, level, message = row
-                last_timestamp = timestamp
-                yield f"data: {json.dumps({'message': message, 'level': level, 'timestamp': timestamp.isoformat()[:-3] + 'Z'})}\n\n"
-
-            if not result.result_rows:
+            result_rows = await get_cached_logs(id_type, id_value, last_timestamp, log_level, client)
+            
+            if result_rows:
+                consecutive_empty_polls = 0
+                for row in result_rows:
+                    timestamp, level, message = row
+                    last_timestamp = timestamp
+                    yield f"data: {json.dumps({'message': message, 'level': level, 'timestamp': timestamp.isoformat()[:-3] + 'Z'})}\n\n"
+            else:
+                consecutive_empty_polls += 1
                 yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
-            await asyncio.sleep(1)  # Wait for 1 second before next query
+            sleep_time = 5 if consecutive_empty_polls >= 3 else 1
+            await asyncio.sleep(sleep_time)
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -259,6 +316,9 @@ async def stream_progress(
 
         # Stream progress updates from ClickHouse
         last_update_time = None if from_start else dt.datetime.now(dt.timezone.utc)
+        consecutive_empty_polls = 0
+        run_completed = False
+        
         while True:
             # Convert last_update_time to the format expected by ClickHouse
             formatted_time = (
@@ -267,26 +327,19 @@ async def stream_progress(
                 else None
             )
 
-            query = f"""
-            SELECT run_id, workflow_id, workflow_version_id, machine_id, timestamp, progress, log, log_type
-            FROM workflow_events
-            WHERE {id_type}_id = '{id_value}'
-            {f"AND timestamp > toDateTime64('{formatted_time}', 6)" if formatted_time is not None else ""}
-            ORDER BY timestamp ASC
-            LIMIT 100
-            """
-            result = await client.query(query)
+            result_rows = await get_cached_progress(id_type, id_value, formatted_time, client)
 
-            if result.result_rows and return_run:
+            if result_rows and return_run:
+                consecutive_empty_polls = 0
                 async with get_db_context() as db:
                     # get a set of unique run ids
                     run_ids = set()
-                    for row in result.result_rows:
+                    for row in result_rows:
                         run_ids.add(row[0])
 
                     # update the last_update_time to the timestamp of the last row
-                    if result.result_rows:
-                        last_update_time = result.result_rows[-1][4]
+                    if result_rows:
+                        last_update_time = result_rows[-1][4]
 
                     for run_id in run_ids:
                         query = (
@@ -317,8 +370,9 @@ async def stream_progress(
                         run_dict = run.to_dict()
                         run_dict.pop("run_log", None)
                         yield f"data: {json.dumps(run_dict)}\n\n"
-            elif result.result_rows:
-                for row in result.result_rows:
+            elif result_rows:
+                consecutive_empty_polls = 0
+                for row in result_rows:
                     (
                         run_id,
                         workflow_id,
@@ -342,11 +396,16 @@ async def stream_progress(
                     yield f"data: {json.dumps(progress_data)}\n\n"
 
                     if status in ["success", "failed", "timeout", "cancelled"]:
-                        return  # Exit the function if the final status is reached
+                        run_completed = True
             else:
+                consecutive_empty_polls += 1
                 yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
-            await asyncio.sleep(1)  # Wait for 1 second before next query
+            if run_completed:
+                return
+
+            sleep_time = 5 if consecutive_empty_polls >= 3 else 1
+            await asyncio.sleep(sleep_time)
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
