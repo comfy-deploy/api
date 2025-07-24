@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from .utils import ensure_run_timeout, get_user_settings, post_process_outputs, select
+from ..utils.multi_level_cache import multi_level_cached
 
 # from sqlalchemy import select
 from api.models import (
@@ -150,25 +151,19 @@ async def stream_logs(
         # Stream logs
         last_timestamp = None
         while True:
-            query = f"""
-            SELECT timestamp, log_level, message
-            FROM log_entries
-            WHERE {id_type}_id = '{id_value}'
-            {f"AND timestamp > '{last_timestamp}'" if last_timestamp else ""}
-            {f"AND log_level = '{log_level}'" if log_level else ""}
-            ORDER BY timestamp ASC
-            LIMIT 100
-            """
-            result = await client.query(query)
-            for row in result.result_rows:
-                timestamp, level, message = row
-                last_timestamp = timestamp
-                yield f"data: {json.dumps({'message': message, 'level': level, 'timestamp': timestamp.isoformat()[:-3] + 'Z'})}\n\n"
-
-            if not result.result_rows:
+            cache_key = f"logs:{id_type}:{id_value}:{last_timestamp or 'start'}:{log_level or 'all'}"
+            
+            cached_result = await get_cached_logs(cache_key, id_type, id_value, last_timestamp, log_level, client)
+            
+            if cached_result:
+                for row in cached_result:
+                    timestamp, level, message = row
+                    last_timestamp = timestamp
+                    yield f"data: {json.dumps({'message': message, 'level': level, 'timestamp': timestamp.isoformat()[:-3] + 'Z'})}\n\n"
+            else:
                 yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
-            await asyncio.sleep(1)  # Wait for 1 second before next query
+            await asyncio.sleep(10)  # Wait for 10 seconds before next query
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -267,15 +262,15 @@ async def stream_progress(
                 else None
             )
 
-            query = f"""
-            SELECT run_id, workflow_id, workflow_version_id, machine_id, timestamp, progress, log, log_type
-            FROM workflow_events
-            WHERE {id_type}_id = '{id_value}'
-            {f"AND timestamp > toDateTime64('{formatted_time}', 6)" if formatted_time is not None else ""}
-            ORDER BY timestamp ASC
-            LIMIT 100
-            """
-            result = await client.query(query)
+            cache_key = f"progress:{id_type}:{id_value}:{formatted_time or 'start'}"
+            
+            result_rows = await get_cached_progress(cache_key, id_type, id_value, formatted_time, client)
+            
+            class MockResult:
+                def __init__(self, rows):
+                    self.result_rows = rows
+            
+            result = MockResult(result_rows)
 
             if result.result_rows and return_run:
                 async with get_db_context() as db:
@@ -346,7 +341,7 @@ async def stream_progress(
             else:
                 yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
-            await asyncio.sleep(1)  # Wait for 1 second before next query
+            await asyncio.sleep(10)  # Wait for 10 seconds before next query
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -397,3 +392,44 @@ async def get_clickhouse_run_logs(
     ]
 
     return formatted_rows
+
+
+@multi_level_cached(
+    key_prefix="clickhouse_logs",
+    ttl_seconds=5,
+    redis_ttl_seconds=30,
+    version="1.0"
+)
+async def get_cached_logs(cache_key: str, id_type: str, id_value: str, last_timestamp, log_level: Optional[str], client):
+    """Cached function to get logs from ClickHouse"""
+    query = f"""
+    SELECT timestamp, log_level, message
+    FROM log_entries
+    WHERE {id_type}_id = '{id_value}'
+    {f"AND timestamp > '{last_timestamp}'" if last_timestamp else ""}
+    {f"AND log_level = '{log_level}'" if log_level else ""}
+    ORDER BY timestamp ASC
+    LIMIT 100
+    """
+    result = await client.query(query)
+    return result.result_rows
+
+
+@multi_level_cached(
+    key_prefix="clickhouse_progress",
+    ttl_seconds=5,
+    redis_ttl_seconds=30,
+    version="1.0"
+)
+async def get_cached_progress(cache_key: str, id_type: str, id_value: str, formatted_time, client):
+    """Cached function to get progress from ClickHouse"""
+    query = f"""
+    SELECT run_id, workflow_id, workflow_version_id, machine_id, timestamp, progress, log, log_type
+    FROM workflow_events
+    WHERE {id_type}_id = '{id_value}'
+    {f"AND timestamp > toDateTime64('{formatted_time}', 6)" if formatted_time is not None else ""}
+    ORDER BY timestamp ASC
+    LIMIT 100
+    """
+    result = await client.query(query)
+    return result.result_rows

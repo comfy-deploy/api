@@ -44,3 +44,56 @@ CREATE TABLE default.log_entries
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (run_id, timestamp)
 TTL toDateTime(timestamp) + INTERVAL 30 DAY DELETE;
+
+CREATE TABLE IF NOT EXISTS default.gpu_events
+(
+    `user_id` String,
+    `org_id` Nullable(String),
+    `machine_id` UUID,
+    `gpu` Nullable(String),
+    `ws_gpu` Nullable(String),
+    `cost_item_title` Nullable(String),
+    `start_time` DateTime64(3),
+    `end_time` Nullable(DateTime64(3)),
+    `cost` Nullable(Float64)
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(start_time)
+ORDER BY (user_id, org_id, machine_id, start_time)
+TTL toDateTime(start_time) + INTERVAL 90 DAY DELETE;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS default.gpu_usage_daily_mv
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(day)
+ORDER BY (user_id, org_id, gpu, day)
+POPULATE
+AS SELECT
+    user_id,
+    org_id,
+    gpu,
+    toDate(start_time) as day,
+    sum(toFloat64(end_time - start_time)) as usage_seconds,
+    sum(cost) as total_cost,
+    count() as event_count
+FROM default.gpu_events
+WHERE end_time IS NOT NULL
+GROUP BY user_id, org_id, gpu, day;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS default.gpu_usage_machine_mv
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(day)
+ORDER BY (user_id, org_id, machine_id, gpu, day)
+POPULATE
+AS SELECT
+    user_id,
+    org_id,
+    machine_id,
+    gpu,
+    ws_gpu,
+    cost_item_title,
+    toDate(start_time) as day,
+    sum(toFloat64(end_time - start_time)) as usage_seconds,
+    sum(cost) as total_cost,
+    count() as event_count
+FROM default.gpu_events
+WHERE end_time IS NOT NULL
+GROUP BY user_id, org_id, machine_id, gpu, ws_gpu, cost_item_title, day;

@@ -6,6 +6,7 @@ import logfire
 from nanoid import generate
 from pydantic import BaseModel
 from api.database import get_db
+from ..utils.multi_level_cache import multi_level_cached
 from api.models import Machine, SubscriptionStatus, User, Workflow, GPUEvent, UserSettings, AuthRequest
 from api.routes.utils import (
     async_lru_cache,
@@ -1394,27 +1395,29 @@ async def gpu_pricing():
     """Return the GPU pricing table"""
     return PRICING_LOOKUP_TABLE
 
-@router.get("/platform/usage-details")
-async def get_usage_details_by_day(
-    request: Request,
+@multi_level_cached(
+    key_prefix="dashboard_usage_daily",
+    ttl_seconds=300,
+    redis_ttl_seconds=1800,
+    version="1.0"
+)
+async def get_usage_details_by_day_cached(
+    cache_key: str,
+    user_id: str,
+    org_id: Optional[str],
     start_time: datetime,
     end_time: datetime,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession,
 ):
-    """Get GPU usage details grouped by day"""
-    user_id = request.state.current_user.get("user_id")
-    org_id = request.state.current_user.get("org_id")
-
+    """Cached function to get usage details by day"""
     if not user_id and not org_id:
         raise HTTPException(status_code=400, detail="User or org id is required")
 
-    # Build the base query conditions
     conditions = [
         GPUEvent.end_time >= start_time,
         GPUEvent.end_time < end_time,
     ]
 
-    # Add org/user conditions
     if org_id:
         conditions.append(GPUEvent.org_id == org_id)
     else:
@@ -1425,7 +1428,6 @@ async def get_usage_details_by_day(
             )
         )
 
-    # Create the query
     query = (
         select(
             cast(GPUEvent.start_time, Date).label("date"),
@@ -1444,11 +1446,10 @@ async def get_usage_details_by_day(
     result = await db.execute(query)
     usage_details = result.fetchall()
 
-    # Transform the data into the desired format
     grouped_by_date = {}
     for row in usage_details:
         if row.date is None:
-            continue  # Skip rows with None date
+            continue
             
         date_str = row.date.strftime("%Y-%m-%d")
         if date_str not in grouped_by_date:
@@ -1456,10 +1457,9 @@ async def get_usage_details_by_day(
 
         if row.gpu:
             unit_amount = PRICING_LOOKUP_TABLE.get(row.gpu, 0)
-            usage_seconds = float(row.usage_in_sec) if row.usage_in_sec is not None else 0  # Also handle None usage_in_sec
+            usage_seconds = float(row.usage_in_sec) if row.usage_in_sec is not None else 0
             grouped_by_date[date_str][row.gpu] = unit_amount * usage_seconds
 
-    # Convert to array format
     chart_data = [
         {"date": date, **gpu_costs} for date, gpu_costs in grouped_by_date.items()
     ]
@@ -1467,24 +1467,47 @@ async def get_usage_details_by_day(
     return chart_data
 
 
-async def get_usage_details(
-    db: AsyncSession,
+@router.get("/platform/usage-details")
+async def get_usage_details_by_day(
+    request: Request,
     start_time: datetime,
     end_time: datetime,
-    org_id: Optional[str] = None,
-    user_id: Optional[str] = None,
-) -> List[Dict]:
-    """Get usage details for a given time period"""
+    db: AsyncSession = Depends(get_db),
+):
+    """Get GPU usage details grouped by day"""
+    user_id = request.state.current_user.get("user_id")
+    org_id = request.state.current_user.get("org_id")
+
+    cache_key = f"usage_daily:{user_id}:{org_id}:{start_time.isoformat()}:{end_time.isoformat()}"
+    
+    return await get_usage_details_by_day_cached(
+        cache_key, user_id, org_id, start_time, end_time, db
+    )
+
+
+@multi_level_cached(
+    key_prefix="dashboard_usage_details",
+    ttl_seconds=300,
+    redis_ttl_seconds=1800,
+    version="1.0"
+)
+async def get_usage_details_cached(
+    cache_key: str,
+    user_id: str,
+    org_id: Optional[str],
+    start_time: datetime,
+    end_time: datetime,
+    db: AsyncSession,
+):
+    """Cached function to get usage details for a given time period"""
     if not user_id and not org_id:
         raise ValueError("User or org id is required")
 
-    # Build the query conditions
     conditions = [
         GPUEvent.end_time >= start_time,
         GPUEvent.end_time < end_time,
     ]
 
-    # Add org/user conditions
     if org_id:
         conditions.append(GPUEvent.org_id == org_id)
     else:
@@ -1494,16 +1517,7 @@ async def get_usage_details(
                 GPUEvent.user_id == user_id,
             )
         )
-        
-    # Filter out public share workflows
-    # conditions.append(
-    #     or_(
-    #         GPUEvent.environment != "public-share",
-    #         GPUEvent.environment == None
-    #     )
-    # )
 
-    # Create the query
     query = (
         select(
             GPUEvent.machine_id,
@@ -1533,7 +1547,6 @@ async def get_usage_details(
     result = await db.execute(query)
     usage_details = result.fetchall()
 
-    # Convert to list of dicts
     return [
         {
             "machine_id": row.machine_id,
@@ -1543,13 +1556,24 @@ async def get_usage_details(
             "usage_in_sec": float(row.usage_in_sec) if row.usage_in_sec is not None else 0,
             "cost_item_title": row.cost_item_title,
             "cost": float(row.cost) if row.cost else (
-                # Calculate cost based on GPU type if row.cost is not available
-                (float(row.usage_in_sec) / 3600) if row.ws_gpu and row.usage_in_sec is not None else  # Workspace GPU cost
-                (PRICING_LOOKUP_TABLE.get(row.gpu, 0) * float(row.usage_in_sec) if row.gpu and row.usage_in_sec is not None else 0)  # Regular GPU cost
+                (float(row.usage_in_sec) / 3600) if row.ws_gpu and row.usage_in_sec is not None else
+                (PRICING_LOOKUP_TABLE.get(row.gpu, 0) * float(row.usage_in_sec) if row.gpu and row.usage_in_sec is not None else 0)
             ),
         }
         for row in usage_details
     ]
+
+
+async def get_usage_details(
+    db: AsyncSession,
+    start_time: datetime,
+    end_time: datetime,
+    org_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Dict]:
+    """Get usage details for a given time period"""
+    cache_key = f"usage_details:{user_id}:{org_id}:{start_time.isoformat()}:{end_time.isoformat()}"
+    return await get_usage_details_cached(cache_key, user_id, org_id, start_time, end_time, db)
 
 
 def get_gpu_event_cost(event: Dict) -> float:

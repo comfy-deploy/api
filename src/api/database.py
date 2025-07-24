@@ -55,6 +55,11 @@ async def get_clickhouse_client():
     global clickhouse_client
     try:
         if clickhouse_client is None:
+            settings = {
+                "max_result_rows": 10000,
+                "max_result_bytes": 1000000000,
+                "result_overflow_mode": "break",
+            }
             clickhouse_client = await clickhouse_connect.get_async_client(
                 host=os.getenv("CLICKHOUSE_HOST"),
                 user=os.getenv("CLICKHOUSE_USER"),
@@ -62,6 +67,7 @@ async def get_clickhouse_client():
                 secure=False if os.getenv("CLICKHOUSE_HOST") in ["localhost", "host.docker.internal", "clickhouse"] else True,
                 pool_mgr=big_pool_mgr,
                 port=os.getenv("CLICKHOUSE_PORT", None),
+                settings=settings,
             )
         return clickhouse_client
     except Exception as e:
