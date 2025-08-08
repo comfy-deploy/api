@@ -19,6 +19,7 @@ global_bucket = os.getenv("SPACES_BUCKET_V2")
 global_region = os.getenv("SPACES_REGION_V2")
 global_access_key = os.getenv("SPACES_KEY_V2")
 global_secret_key = os.getenv("SPACES_SECRET_V2")
+company_cdn = os.getenv("COMPANY_CLOUDFRONT_DOMAIN")
 
 # Cache for assumed role credentials
 _credentials_cache: Dict[str, Dict[str, Any]] = {}
@@ -165,6 +166,8 @@ class S3Config(BaseModel):
     secret_key: str
     is_custom: bool
     session_token: Optional[str] = None
+    cloudfront_domain: Optional[str] = None
+    company_cloudfront_domain: Optional[str] = None
 
 
 async def retrieve_s3_config(user_settings: UserSettings) -> S3Config:
@@ -175,6 +178,8 @@ async def retrieve_s3_config(user_settings: UserSettings) -> S3Config:
     secret_key = global_secret_key
     is_custom = False
     session_token = None
+    use_cloudfront = False
+    user_cloudfront_domain = None
     
     if user_settings is not None:
         if user_settings.output_visibility == "private":
@@ -186,6 +191,8 @@ async def retrieve_s3_config(user_settings: UserSettings) -> S3Config:
             access_key = user_settings.s3_access_key_id
             secret_key = user_settings.s3_secret_access_key
             is_custom = True
+            use_cloudfront = bool(getattr(user_settings, "use_cloudfront", False))
+            user_cloudfront_domain = getattr(user_settings, "cloudfront_domain", None)
             
             if user_settings.assumed_role_arn:
                 credentials = await get_assumed_role_credentials(user_settings.assumed_role_arn, region)
@@ -193,9 +200,8 @@ async def retrieve_s3_config(user_settings: UserSettings) -> S3Config:
                 access_key = credentials['access_key']
                 secret_key = credentials['secret_key']
                 session_token = credentials['session_token']
-                # expiration = credentials['expiration']
 
-    return S3Config(
+    cfg = S3Config(
         public=public,
         bucket=bucket,
         region=region,
@@ -204,3 +210,8 @@ async def retrieve_s3_config(user_settings: UserSettings) -> S3Config:
         is_custom=is_custom,
         session_token=session_token,
     )
+    if not is_custom and company_cdn:
+        cfg.company_cloudfront_domain = company_cdn
+    if is_custom and use_cloudfront and user_cloudfront_domain:
+        cfg.cloudfront_domain = user_cloudfront_domain
+    return cfg

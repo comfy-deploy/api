@@ -256,11 +256,18 @@ async def get_optimized_image_response(
     is_public = s3_config.public
     
     if is_public:
-        # Public object - return direct URL
+        cdn_url = None
+        company_domain = getattr(s3_config, "company_cloudfront_domain", None)
+        user_domain = getattr(s3_config, "cloudfront_domain", None)
+        if not s3_config.is_custom and company_domain:
+            cdn_url = f"https://{company_domain}/{optimized_key}"
+        elif s3_config.is_custom and user_domain:
+            cdn_url = f"https://{user_domain}/{optimized_key}"
+        if cdn_url:
+            return RedirectResponse(url=cdn_url, status_code=302, headers=headers)
         public_url = f"https://{s3_config.bucket}.s3.{s3_config.region}.amazonaws.com/{optimized_key}"
         return RedirectResponse(url=public_url, status_code=302, headers=headers)
     else:
-        # Private object - return presigned URL
         presigned_url = generate_presigned_download_url(
             bucket=s3_config.bucket,
             object_key=optimized_key,
@@ -268,9 +275,9 @@ async def get_optimized_image_response(
             access_key=s3_config.access_key,
             secret_key=s3_config.secret_key,
             session_token=s3_config.session_token,
-            expiration=3600  # 1 hour
+            expiration=3600
         )
-    return RedirectResponse(url=presigned_url, status_code=302, headers=headers)
+        return RedirectResponse(url=presigned_url, status_code=302, headers=headers)
 
 
 async def get_fallback_response(

@@ -607,6 +607,8 @@ class UserSettings(SerializableMixin, Base):
     s3_bucket_name = Column(String)
     assumed_role_arn = Column(String)
     s3_region = Column(String)
+    use_cloudfront = Column(Boolean, default=False)
+    cloudfront_domain = Column(String)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

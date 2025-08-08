@@ -149,6 +149,8 @@ class UserSettingsUpdateRequest(BaseModel):
     s3_region: Optional[str] = None
     spend_limit: Optional[float] = None
     assumed_role_arn: Optional[str] = None
+    use_cloudfront: Optional[bool] = None
+    cloudfront_domain: Optional[str] = None
 
 @router.put("/platform/user-settings")
 async def update_user_settings(

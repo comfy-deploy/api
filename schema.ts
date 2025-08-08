@@ -1133,6 +1133,8 @@ export const userSettingsTable = dbSchema.table("user_settings", {
     encrypted_s3_key: text("encrypted_s3_key"),
     s3_bucket_name: text("s3_bucket_name"),
     s3_region: text("s3_region"),
+    use_cloudfront: boolean("use_cloudfront").default(false),
+    cloudfront_domain: text("cloudfront_domain"),
     created_at: timestamp("created_at").defaultNow().notNull(),
     updated_at: timestamp("updated_at").defaultNow().notNull(),
 
@@ -1172,6 +1174,8 @@ export const updateUserSettingsSchema = createInsertSchema(userSettingsTable, {
     encrypted_s3_key: z.string().optional(),
     assumed_role_arn: z.string().optional().describe("Assumed Role ARN"),
     s3_region: z.string().optional().describe("S3 Region"),
+    use_cloudfront: z.boolean().default(false).optional().describe("Use CloudFront CDN for custom bucket"),
+    cloudfront_domain: z.string().optional().describe("CloudFront domain (e.g. dxxxxx.cloudfront.net)"),
     spend_limit: z.coerce
         .number()
         .default(5.0)
@@ -1188,6 +1192,8 @@ export const updateUserSettingsSchema = createInsertSchema(userSettingsTable, {
     s3_secret_access_key: true,
     s3_bucket_name: true,
     s3_region: true,
+    use_cloudfront: true,
+    cloudfront_domain: true,
     spend_limit: true,
     max_spend_limit: true,
     assumed_role_arn: true,
