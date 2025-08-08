@@ -276,13 +276,6 @@ async def get_optimized_image_response(
     if not exists_now and original_key:
         return await get_fallback_response(s3_config, original_key, user_settings, 43200)
 
-    try:
-        exists_now = await check_s3_object_exists(s3_config, optimized_key)
-    except Exception:
-        exists_now = False
-    if not exists_now and original_key:
-        return await get_fallback_response(s3_config, original_key, user_settings, 43200)
-
     # Check if the optimized image is public
     # is_public = await check_s3_object_public(s3_config, optimized_key)
     is_public = s3_config.public
