@@ -198,6 +198,18 @@ async def trigger_image_optimization(
             expiration=300
         )
         
+        ttl_seconds = None
+        if transform_config.get("is_public", False):
+            if not s3_config.is_custom:
+                ttl_seconds = 2592000
+            else:
+                ttl_seconds = 86400
+        cache_control_hdr = (
+            f"public, max-age={ttl_seconds}, s-maxage={ttl_seconds}, stale-while-revalidate=60"
+            if ttl_seconds
+            else None
+        )
+
         output_url = generate_presigned_url(
             bucket=s3_config.bucket,
             object_key=optimized_key,
@@ -207,13 +219,17 @@ async def trigger_image_optimization(
             session_token=s3_config.session_token,
             expiration=300,
             http_method="PUT",
-            public=transform_config["is_public"]
+            public=transform_config["is_public"],
+            cache_control=cache_control_hdr,
         )
 
         optimize_image = modal.Function.from_name("image-optimizer", "optimize_image")
         
-        # Call Modal function asynchronously (fire and forget)
-        await optimize_image.remote.aio(input_url, output_url, transform_config)
+        modal_config = dict(transform_config)
+        if cache_control_hdr:
+            modal_config["cache_control"] = cache_control_hdr
+
+        await optimize_image.remote.aio(input_url, output_url, modal_config)
         
     except Exception as e:
         logfire.error("Failed to trigger image optimization", extra={
@@ -243,9 +259,11 @@ async def get_optimized_image_response(
     elif optimized_key.endswith(".avif"):
         content_type = "image/avif"
     
-    # Create response headers with cache control
+    ttl = cache_duration
+    if s3_config.public:
+        ttl = 2592000 if not s3_config.is_custom else 86400
     headers = {
-        "Cache-Control": f"public, max-age={cache_duration}, stale-while-revalidate=60",
+        "Cache-Control": f"public, max-age={ttl}, s-maxage={ttl}, stale-while-revalidate=60",
         "Vary": "Accept-Encoding",
         "Content-Type": content_type,
         "Content-Disposition": "inline"

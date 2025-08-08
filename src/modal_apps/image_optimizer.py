@@ -103,6 +103,8 @@ async def upload_image(data: bytes, url: str, config: Dict[str, Any]) -> None:
     headers = {}
     if config.get('is_public', False):
         headers['x-amz-acl'] = 'public-read'
+    if config.get('cache_control'):
+        headers['Cache-Control'] = config['cache_control']
     
     async with aiohttp.ClientSession() as session:
         async with session.put(url, data=data, headers=headers) as response:
