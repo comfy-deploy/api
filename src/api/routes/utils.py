@@ -716,6 +716,7 @@ def generate_presigned_url(
     size=None,
     content_type=None,
     public=False,
+    cache_control=None,
 ):
     s3_client = boto3.client(
         "s3",
@@ -737,6 +738,8 @@ def generate_presigned_url(
     #     params["ContentLength"] = size
     if content_type is not None:
         params["ContentType"] = content_type
+    if cache_control is not None:
+        params["CacheControl"] = cache_control
 
     try:
         response = s3_client.generate_presigned_url(

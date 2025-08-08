@@ -33,6 +33,7 @@ async def optimize_image_on_demand(
     db: AsyncSession = Depends(get_db)
 ):
     cache = 3600
+    optimized_key = None
     """
     On-demand image optimization with Cloudflare-like URL structure
     
@@ -59,14 +60,14 @@ async def optimize_image_on_demand(
         
         # Generate cache key for optimized image
         cache_key = generate_cache_key(s3_key, transform_config)
-        
+
         # Extract the file extension from the original key
         file_extension = get_file_extension(s3_key)
-        
+
         # If format is specified in transformations, use that extension instead
         if "format" in transform_config:
             file_extension = f".{transform_config['format']}"
-            
+
         optimized_key = f"optimized/{cache_key}{file_extension}"
         
         existence_check, public_check = await asyncio.gather(
@@ -87,11 +88,8 @@ async def optimize_image_on_demand(
         if existence_check:
             return await get_optimized_image_response(s3_config, optimized_key, user_settings, cache)
 
-        if is_public:
-            transform_config["is_public"] = True
-        
         # Trigger optimization asynchronously
-        await trigger_image_optimization(s3_config, s3_key, optimized_key, transform_config)
+        await trigger_image_optimization(s3_config, s3_key, optimized_key, transform_config, cache, is_public)
         
         # logfire.info("Triggered image optimization", extra={
         #     "s3_key": s3_key,
@@ -129,7 +127,7 @@ async def optimize_image_on_demand(
                 detail="Authentication required for private or custom bucket images"
             )
         
-        return await get_fallback_response(s3_config, s3_key, user_settings, cache)
+        return await get_optimized_image_response(s3_config, optimized_key or s3_key, user_settings, cache)
 
 
 def parse_transformations(transformations: str) -> Dict[str, Any]:
@@ -180,9 +178,11 @@ def get_file_extension(s3_key: str) -> str:
 
 async def trigger_image_optimization(
     s3_config: S3Config,
-    original_key: str, 
-    optimized_key: str, 
-    transform_config: Dict[str, Any]
+    original_key: str,
+    optimized_key: str,
+    transform_config: Dict[str, Any],
+    cache_duration: int,
+    is_public: bool
 ):
     """Trigger Modal optimization in background"""
     
@@ -207,7 +207,8 @@ async def trigger_image_optimization(
             session_token=s3_config.session_token,
             expiration=300,
             http_method="PUT",
-            public=transform_config["is_public"]
+            public=is_public,
+            cache_control=f"public, max-age={cache_duration}"
         )
 
         optimize_image = modal.Function.from_name("image-optimizer", "optimize_image")
@@ -280,17 +281,6 @@ async def get_optimized_image_response(
         expiration=3600,
     )
     return RedirectResponse(url=presigned_url, status_code=302, headers=headers)
-
-
-async def get_fallback_response(
-    s3_config: S3Config,
-    s3_key: str, 
-    user_settings: Optional[UserSettings],
-    cache_duration: int = 43200  # Default 12 hours for fallback images
-):
-    """Fallback to serving original image if optimization fails"""
-    # logfire.info("Serving original image as fallback", extra={"s3_key": s3_key})
-    return await get_optimized_image_response(s3_config, s3_key, user_settings, cache_duration)
 
 
 @multi_level_cached(
