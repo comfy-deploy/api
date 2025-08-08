@@ -85,10 +85,9 @@ async def optimize_image_on_demand(
             )
         
         if existence_check:
-            return await get_optimized_image_response(s3_config, optimized_key, user_settings, cache)
+            return await get_optimized_image_response(s3_config, optimized_key, user_settings, cache, original_key=s3_key)
 
-        if is_public:
-            transform_config["is_public"] = True
+        transform_config["is_public"] = True if not s3_config.is_custom else is_public
         
         # Trigger optimization asynchronously
         await trigger_image_optimization(s3_config, s3_key, optimized_key, transform_config)
@@ -101,7 +100,7 @@ async def optimize_image_on_demand(
         # })
         
         # Return URL to optimized image (will be ready shortly)
-        return await get_optimized_image_response(s3_config, optimized_key, user_settings, cache)
+        return await get_optimized_image_response(s3_config, optimized_key, user_settings, cache, original_key=s3_key)
         
     except HTTPException:
         raise
@@ -244,7 +243,8 @@ async def get_optimized_image_response(
     s3_config: S3Config, 
     optimized_key: str, 
     user_settings: Optional[UserSettings],
-    cache_duration: int = 86400  # Default cache duration of 24 hours (in seconds)
+    cache_duration: int = 86400,  # Default cache duration of 24 hours (in seconds)
+    original_key: Optional[str] = None,
 ):
     """Return appropriate response for optimized image"""
 
@@ -269,6 +269,20 @@ async def get_optimized_image_response(
         "Content-Disposition": "inline"
     }
     
+    try:
+        exists_now = await check_s3_object_exists(s3_config, optimized_key)
+    except Exception:
+        exists_now = False
+    if not exists_now and original_key:
+        return await get_fallback_response(s3_config, original_key, user_settings, 43200)
+
+    try:
+        exists_now = await check_s3_object_exists(s3_config, optimized_key)
+    except Exception:
+        exists_now = False
+    if not exists_now and original_key:
+        return await get_fallback_response(s3_config, original_key, user_settings, 43200)
+
     # Check if the optimized image is public
     # is_public = await check_s3_object_public(s3_config, optimized_key)
     is_public = s3_config.public
@@ -305,8 +319,39 @@ async def get_fallback_response(
     cache_duration: int = 43200  # Default 12 hours for fallback images
 ):
     """Fallback to serving original image if optimization fails"""
-    # logfire.info("Serving original image as fallback", extra={"s3_key": s3_key})
-    return await get_optimized_image_response(s3_config, s3_key, user_settings, cache_duration)
+    content_type = "image/*"
+    if s3_key.endswith(".jpg") or s3_key.endswith(".jpeg"):
+        content_type = "image/jpeg"
+    elif s3_key.endswith(".png"):
+        content_type = "image/png"
+    elif s3_key.endswith(".gif"):
+        content_type = "image/gif"
+    elif s3_key.endswith(".webp"):
+        content_type = "image/webp"
+    elif s3_key.endswith(".avif"):
+        content_type = "image/avif"
+
+    headers = {
+        "Cache-Control": f"public, max-age={cache_duration}, s-maxage={cache_duration}, stale-while-revalidate=60",
+        "Vary": "Accept-Encoding",
+        "Content-Type": content_type,
+        "Content-Disposition": "inline"
+    }
+
+    if s3_config.public:
+        s3_url = f"https://{s3_config.bucket}.s3.{s3_config.region}.amazonaws.com/{s3_key}"
+        return RedirectResponse(url=s3_url, status_code=302, headers=headers)
+    else:
+        presigned_url = generate_presigned_download_url(
+            bucket=s3_config.bucket,
+            object_key=s3_key,
+            region=s3_config.region,
+            access_key=s3_config.access_key,
+            secret_key=s3_config.secret_key,
+            session_token=s3_config.session_token,
+            expiration=3600
+        )
+        return RedirectResponse(url=presigned_url, status_code=302, headers=headers)
 
 
 @multi_level_cached(
