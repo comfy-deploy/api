@@ -1,0 +1,2 @@
+ALTER TABLE "comfyui_deploy"."user_settings" ADD COLUMN "use_cloudfront" boolean DEFAULT false;--> statement-breakpoint
+ALTER TABLE "comfyui_deploy"."user_settings" ADD COLUMN "cloudfront_domain" text;
