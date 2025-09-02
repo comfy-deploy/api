@@ -304,7 +304,8 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
         image = beam.Image()
         
         # Add base system dependencies
-        image = image.add_commands(["apt update && apt install git -y"])
+        # image = image.add_commands(["apt update && apt install git -y"])
+        # image = image.add_commands(["mkdir -p /comfyui/custom_nodes"])
         
         print("create_session_beam_task", "starting to translate docker_commands to beam commands")
         
@@ -328,6 +329,9 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
                         # Remove RUN prefix and add the command
                         beam_cmd = cmd[4:]  # Remove "RUN "
                         
+                        # Replace problematic echo statements with 'true' to avoid shell syntax issues
+                        beam_cmd = beam_cmd.replace("|| echo 'install script failed'", "|| true")
+                        
                         # Check if it's a pip install command
                         # if "pip install" in beam_cmd or "python -m pip install" in beam_cmd:
                         #     # Extract packages for beam's add_python_packages method
@@ -339,8 +343,8 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
                         if current_workdir:
                             # For complex shell commands (if/then/fi, loops, etc.), wrap in subshell
                             if any(keyword in beam_cmd for keyword in ["if [", "then", "fi", "for ", "while ", "do", "done", "case ", "esac"]):
-                                beam_cmd = f"cd {current_workdir}"
-                                beam_commands.append(beam_cmd)
+                                # Use a subshell to ensure the cd doesn't affect the conditional logic
+                                beam_commands.append(f"(cd {current_workdir} && {beam_cmd})")
                             else:
                                 beam_commands.append(f"cd {current_workdir} && {beam_cmd}")
                         else:
@@ -362,7 +366,11 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
                     else:
                         # For any other commands, add as-is
                         if current_workdir:
-                            beam_commands.append(f"cd {current_workdir} && {cmd}")
+                            # Check if it's a complex command that needs subshell
+                            if any(keyword in cmd for keyword in ["if [", "then", "fi", "||", "&&", "|"]):
+                                beam_commands.append(f"(cd {current_workdir} && {cmd})")
+                            else:
+                                beam_commands.append(f"cd {current_workdir} && {cmd}")
                             # current_workdir = None
                         else:
                             beam_commands.append(cmd)
@@ -377,19 +385,23 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
                     image = image.add_commands(beam_commands)
               
         print("create_session_beam_task", "all_commands", all_commands)      
+        
+        image = image.add_commands([
+            "ln -s /public_models /comfyui/models",
+        ])
               
         # return
         
         # Example of additional configuration (uncomment if needed):
-        ORG_NAME = "Comfy-Org"
-        REPO_NAME = "flux1-schnell"
-        WEIGHTS_FILE = "flux1-schnell-fp8.safetensors"
-        COMMIT = "f2808ab17fe9ff81dcf89ed0301cf644c281be0a"
-        #
-        image = image.add_commands([
-            f"huggingface-cli download {ORG_NAME}/{REPO_NAME} {WEIGHTS_FILE} --cache-dir /comfy-cache",
-            f"ln -s /comfy-cache/models--{ORG_NAME}--{REPO_NAME}/snapshots/{COMMIT}/{WEIGHTS_FILE} /comfyui/models/checkpoints/{WEIGHTS_FILE}",
-        ])
+        # ORG_NAME = "Comfy-Org"
+        # REPO_NAME = "flux1-schnell"
+        # WEIGHTS_FILE = "flux1-schnell-fp8.safetensors"
+        # COMMIT = "f2808ab17fe9ff81dcf89ed0301cf644c281be0a"
+        # #
+        # image = image.add_commands([
+        #     f"huggingface-cli download {ORG_NAME}/{REPO_NAME} {WEIGHTS_FILE} --cache-dir /comfy-cache",
+        #     f"ln -s /comfy-cache/models--{ORG_NAME}--{REPO_NAME}/snapshots/{COMMIT}/{WEIGHTS_FILE} /comfyui/models/checkpoints/{WEIGHTS_FILE}",
+        # ])
 
         comfyui_server = beam.Pod(
             image=image,
@@ -397,6 +409,7 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
             cpu=12,
             memory="32Gi",
             gpu="RTX4090",
+            volumes=[beam.Volume(name="public_models", mount_path="/public_models")],
             entrypoint=["sh", "-c", "'cd /comfyui && python main.py --dont-print-server --enable-cors-header --listen --port 8188 --preview-method auto'"],
         )
         
