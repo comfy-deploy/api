@@ -808,10 +808,10 @@ async def create_session(
     plan = request.state.current_user.get("plan")
 
     if plan == "free":
-        raise HTTPException(
-            status_code=403,
-            detail="Free plan users cannot create sessions, we are mitigating abuse, please wait",
-        )
+        # raise HTTPException(
+        #     status_code=403,
+        #     detail="Free plan users cannot create sessions, we are mitigating abuse, please wait",
+        # )
 
         max_concurrent_sessions = 1
         max_timeout_minutes = 30
