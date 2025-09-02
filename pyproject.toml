@@ -36,6 +36,7 @@ dependencies = [
     "nanoid>=2.0.0",
     "redis>=6.3.0",
     "cachetools>=5.3.0",
+    "beam-client>=0.2.176",
 ]
 
 [build-system]

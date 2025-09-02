@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from upstash_redis.asyncio import Redis
 from .utils import select
 from pydantic import BaseModel, Field
+import beam
 
 
 from modal._output import OutputManager
@@ -285,6 +286,157 @@ async def increase_timeout_task(
     runner = await get_comfy_runner_for_workspace(machine_id, session_id, 60 * 24, gpu, optimized_runner)
     await runner.increase_timeout.spawn.aio(timeout)
 
+async def create_session_beam_task(session_id: UUID, machine_id: str, status_queue: Optional[asyncio.Queue] = None):
+    try:
+        print("create_session_beam_task", session_id, machine_id, status_queue)
+        send_log_entry(session_id, machine_id, "Creating session with beam...", "info")
+        
+        async with get_db_context() as db:
+            machine = await db.execute(
+                select(Machine)
+                .where(Machine.id == machine_id)
+            )
+            machine = machine.scalar_one()
+            
+        docker_commands = await generate_all_docker_commands(machine)
+        
+        # Initialize the beam image
+        image = beam.Image()
+        
+        # Add base system dependencies
+        image = image.add_commands(["apt update && apt install git -y"])
+        
+        print("create_session_beam_task", "starting to translate docker_commands to beam commands")
+        
+        all_commands = []
+        
+        # Translate docker_commands to beam commands
+        # docker_commands.docker_commands is a List[List[str]]
+        # This transpiles Docker directives to beam-compatible shell commands:
+        # - RUN cmd -> cmd (strips RUN prefix)
+        # - WORKDIR /path -> cd /path (converts to shell cd command)
+        # - ENV VAR=value -> export VAR=value (converts to shell export)
+        # - COPY/ADD -> skipped (beam handles files differently)
+        for command_group in docker_commands.docker_commands:
+            current_workdir = None
+            if command_group:  # Skip empty command groups
+                beam_commands = []
+                
+                for cmd in command_group:
+                    # Strip Docker directives and convert to beam-compatible commands
+                    if cmd.startswith("RUN "):
+                        # Remove RUN prefix and add the command
+                        beam_cmd = cmd[4:]  # Remove "RUN "
+                        
+                        # Check if it's a pip install command
+                        # if "pip install" in beam_cmd or "python -m pip install" in beam_cmd:
+                        #     # Extract packages for beam's add_python_packages method
+                        #     # For now, we'll add it as a regular command
+                        #     # TODO: Consider parsing and using image.add_python_packages()
+                        #     pass
+                        
+                        # If we have a pending WORKDIR, prepend cd command
+                        if current_workdir:
+                            # For complex shell commands (if/then/fi, loops, etc.), wrap in subshell
+                            if any(keyword in beam_cmd for keyword in ["if [", "then", "fi", "for ", "while ", "do", "done", "case ", "esac"]):
+                                beam_cmd = f"cd {current_workdir}"
+                                beam_commands.append(beam_cmd)
+                            else:
+                                beam_commands.append(f"cd {current_workdir} && {beam_cmd}")
+                        else:
+                            beam_commands.append(beam_cmd)
+                        
+                    elif cmd.startswith("WORKDIR "):
+                        # Store WORKDIR for next command (beam doesn't have persistent WORKDIR)
+                        current_workdir = cmd[8:]  # Remove "WORKDIR "
+                        
+                    elif cmd.startswith("ENV "):
+                        # Convert ENV to export command
+                        env_var = cmd[4:]  # Remove "ENV "
+                        beam_commands.append(f"export {env_var}")
+                        
+                    elif cmd.startswith("COPY ") or cmd.startswith("ADD "):
+                        # Skip COPY/ADD as beam handles file management differently
+                        continue
+                        
+                    else:
+                        # For any other commands, add as-is
+                        if current_workdir:
+                            beam_commands.append(f"cd {current_workdir} && {cmd}")
+                            # current_workdir = None
+                        else:
+                            beam_commands.append(cmd)
+                
+                # Add any remaining WORKDIR change
+                # if current_workdir:
+                #     beam_commands.append(f"cd {current_workdir}")
+                
+                # Add the translated commands to the image
+                if beam_commands:
+                    all_commands.extend(beam_commands)
+                    image = image.add_commands(beam_commands)
+              
+        print("create_session_beam_task", "all_commands", all_commands)      
+              
+        # return
+        
+        # Example of additional configuration (uncomment if needed):
+        ORG_NAME = "Comfy-Org"
+        REPO_NAME = "flux1-schnell"
+        WEIGHTS_FILE = "flux1-schnell-fp8.safetensors"
+        COMMIT = "f2808ab17fe9ff81dcf89ed0301cf644c281be0a"
+        #
+        image = image.add_commands([
+            f"huggingface-cli download {ORG_NAME}/{REPO_NAME} {WEIGHTS_FILE} --cache-dir /comfy-cache",
+            f"ln -s /comfy-cache/models--{ORG_NAME}--{REPO_NAME}/snapshots/{COMMIT}/{WEIGHTS_FILE} /comfyui/models/checkpoints/{WEIGHTS_FILE}",
+        ])
+
+        comfyui_server = beam.Pod(
+            image=image,
+            ports=[8188],
+            cpu=12,
+            memory="32Gi",
+            gpu="RTX4090",
+            entrypoint=["sh", "-c", "python main.py --dont-print-server --enable-cors-header --listen --port 8188 --preview-method auto"],
+        )
+        
+        print("create_session_beam_task", "starting to create the beam container")
+
+        res = comfyui_server.create()
+        
+        print("create_session_beam_task", "putting the container id into the status queue")
+        
+        if status_queue is not None:
+            await status_queue.put(res.container_id)
+        
+        async with get_db_context() as db:
+            result = await db.execute(
+                update(GPUEvent)
+                .where(GPUEvent.session_id == str(session_id))
+                .values(
+                    tunnel_url=res.url,
+                    modal_function_id=res.container_id,
+                )
+                .returning(GPUEvent)
+            )
+            await db.commit()
+            gpuEvent = result.scalar_one()
+            print("gpuEvent", gpuEvent)
+            await db.refresh(gpuEvent)
+            return gpuEvent
+    
+    except Exception as e:
+        print("create_session_beam_task", "error creating the beam container", e)
+        raise e
+
+    
+async def set_timeout_redis(session_id: UUID, timeout: int):
+    timeout_duration = timeout or 15
+    timeout_end_time = datetime.utcnow() + timedelta(minutes=timeout_duration)
+    if redis is not None:
+        await redis.set(
+            f"session:{session_id}:timeout_end", timeout_end_time.isoformat()
+        )
 
 async def create_session_background_task(
     machine_id: str,
@@ -294,6 +446,8 @@ async def create_session_background_task(
     gpu: str,
     status_queue: Optional[asyncio.Queue] = None,
 ):
+    return await create_session_beam_task(session_id, machine_id, status_queue)
+    
     send_log_entry(session_id, machine_id, "Creating session...", "info")
     # try:
     #     async with get_db_context() as db:
@@ -331,17 +485,9 @@ async def create_session_background_task(
     except (AttributeError, modal.exception.Error):
         has_increase_timeout_v2 = False
 
-    async def set_timeout_redis():
-        timeout_duration = timeout or 15
-        timeout_end_time = datetime.utcnow() + timedelta(minutes=timeout_duration)
-        if redis is not None:
-            await redis.set(
-                f"session:{session_id}:timeout_end", timeout_end_time.isoformat()
-            )
-
     if has_increase_timeout_v2:
         try:
-            await set_timeout_redis()
+            await set_timeout_redis(session_id, timeout)
         except Exception as e:
             logfire.error(f"Error setting timeout redis: {str(e)}")
 
@@ -1509,6 +1655,11 @@ class DeleteSessionResponse(BaseModel):
         
 #         # Return the list of cancelled run IDs
 #         return run_ids
+
+# async def delete_session_beam_task(gpuEvent: GPUEvent):
+#     beam_container_id = gpuEvent.modal_function_id
+#     if beam_container_id:
+#         beam.Container.get(beam_container_id).terminate()
 
 # Delete a session by id
 @router.delete(
