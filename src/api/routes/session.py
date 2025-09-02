@@ -397,7 +397,7 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
             cpu=12,
             memory="32Gi",
             gpu="RTX4090",
-            entrypoint=["sh", "-c", "python main.py --dont-print-server --enable-cors-header --listen --port 8188 --preview-method auto"],
+            entrypoint=["sh", "-c", "'cd /comfyui && python main.py --dont-print-server --enable-cors-header --listen --port 8188 --preview-method auto'"],
         )
         
         print("create_session_beam_task", "starting to create the beam container")
