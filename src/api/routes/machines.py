@@ -503,11 +503,6 @@ async def validate_free_plan_restrictions(
     if plan != "free":
         return
 
-    raise HTTPException(
-        status_code=403,
-        detail="Free plan users cannot create machines, we are mitigating abuse, please wait",
-    )
-
     # Check machine count limit (only for creation)
     if not is_update:
         max_machine_count = 1
@@ -522,7 +517,8 @@ async def validate_free_plan_restrictions(
 
         if machine_count >= max_machine_count:
             raise HTTPException(
-                status_code=400, detail="Free plan does not support more than 1 machine"
+                status_code=400, 
+                detail="Free plan is limited to 1 machine. Please upgrade to create more machines."
             )
 
     # Check restricted fields
@@ -541,17 +537,68 @@ async def validate_free_plan_restrictions(
                 detail=f"Free plan users cannot use {field}. Please upgrade to use this feature.",
             )
 
-    # Check docker_command_steps separately for commands
+    # Check docker_command_steps - only allow ComfyUI Deploy node
     if (
         "docker_command_steps" in machine_data
         and machine_data["docker_command_steps"] is not None
     ):
         steps = machine_data["docker_command_steps"].get("steps", [])
-        if any("commands" in step for step in steps):
-            raise HTTPException(
-                status_code=403,
-                detail="Free plan users cannot include custom commands in docker_command_steps. Please upgrade to use this feature.",
-            )
+        
+        # Count ComfyUI Deploy nodes and other nodes
+        comfydeploy_count = 0
+        other_nodes_count = 0
+        
+        for step in steps:
+            step_type = step.get("type")
+            
+            # Check for custom commands
+            if step_type == "commands":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Free plan users cannot include custom commands. Please upgrade to use this feature.",
+                )
+            
+            # Check for custom nodes
+            if step_type == "custom-node":
+                data = step.get("data", {})
+                url = data.get("url", "").lower()
+                
+                # Check if it's the ComfyUI Deploy node
+                is_comfydeploy = any(allowed_url in url for allowed_url in [
+                    "github.com/bennykok/comfyui-deploy",
+                    "github.com/bennykok/comfyui-deploy.git",
+                    "git@github.com:bennykok/comfyui-deploy"
+                ])
+                
+                if is_comfydeploy:
+                    comfydeploy_count += 1
+                else:
+                    other_nodes_count += 1
+                    node_name = data.get("name", "Unknown")
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Free plan users can only use the ComfyUI Deploy custom node. '{node_name}' is not allowed. Please upgrade to use additional custom nodes.",
+                    )
+            
+            # Check for custom node manager
+            if step_type == "custom-node-manager":
+                data = step.get("data", {})
+                node_id = data.get("node_id", "")
+                
+                # Only allow comfyui-deploy through the manager
+                if node_id == "comfyui-deploy":
+                    comfydeploy_count += 1
+                else:
+                    other_nodes_count += 1
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Free plan users can only use the ComfyUI Deploy custom node. Please upgrade to use additional custom nodes.",
+                    )
+        
+        # Ensure at least one ComfyUI Deploy node exists (for updates)
+        if other_nodes_count == 0 and comfydeploy_count == 0 and len(steps) > 0:
+            # This shouldn't happen, but just in case
+            pass
 
 
 @router.post("/machine/serverless")
