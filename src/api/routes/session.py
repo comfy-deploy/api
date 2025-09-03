@@ -386,8 +386,11 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
               
         print("create_session_beam_task", "all_commands", all_commands)      
         
+        PRIVATE_BASEMODEL_DIR_SYM = "/private_models"
+        PUBLIC_BASEMODEL_DIR = "/public_models"
         image = image.add_commands([
-            "ln -s /public_models /comfyui/models",
+            f"rm -rf {PRIVATE_BASEMODEL_DIR_SYM} /comfyui/models {PUBLIC_BASEMODEL_DIR}",
+            f"ln -s {PUBLIC_BASEMODEL_DIR} /comfyui/models",
         ])
               
         # return
@@ -406,9 +409,10 @@ async def create_session_beam_task(session_id: UUID, machine_id: str, status_que
         comfyui_server = beam.Pod(
             image=image,
             ports=[8188],
-            cpu=12,
-            memory="32Gi",
+            # cpu=12,
+            # memory="32Gi",
             gpu="RTX4090",
+            # gpu="A10G",
             volumes=[beam.Volume(name="public_models", mount_path="/public_models")],
             entrypoint=["sh", "-c", "'cd /comfyui && python main.py --dont-print-server --enable-cors-header --listen --port 8188 --preview-method auto'"],
         )
