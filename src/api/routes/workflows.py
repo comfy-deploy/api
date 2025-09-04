@@ -1,4 +1,3 @@
-import json
 import logging
 from fastapi import APIRouter, Depends, Request
 from typing import List, Optional
@@ -7,31 +6,10 @@ from api.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from .utils import fetch_user_icon, post_process_output_data, select, is_valid_uuid, get_user_settings
 from api.models import Workflow
-from sqlalchemy import func
-from fastapi.responses import JSONResponse
-from sqlalchemy import text, cast, String, or_
-from datetime import datetime
-from uuid import UUID
-from decimal import Decimal
+from sqlalchemy import text
 import asyncio
 
 logger = logging.getLogger(__name__)
-
-
-class CustomJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (datetime, UUID)):
-            return str(obj)
-        if isinstance(obj, Decimal):
-            return float(obj)
-        return super().default(obj)
-
-
-def json_serial(obj):
-    """JSON serializer for objects not serializable by default json code"""
-    if isinstance(obj, (datetime, UUID)):
-        return str(obj)
-    raise TypeError(f"Type {type(obj)} not serializable")
 
 
 router = APIRouter(tags=["Workflow"])
@@ -62,6 +40,9 @@ async def get_workflows(
         wf.updated_at AS updated_at,
         wf.pinned AS pinned,
         wf.cover_image AS cover_image,
+        wf.org_id AS org_id,
+        wf.deleted AS deleted,
+        wf.description AS description,
         users.name AS user_name,
         users.id AS user_id,
         wf.selected_machine_id AS selected_machine_id
@@ -128,11 +109,8 @@ async def get_workflows(
         user_icon = user_icons.get(str(workflow["user_id"]))
         workflow["user_icon"] = user_icon.image_url if user_icon else None
 
-    # Use the custom encoder to serialize the data
-    return JSONResponse(
-        status_code=200,
-        content=json.loads(json.dumps(workflows, cls=CustomJSONEncoder)),
-    )
+    # Convert to Pydantic models - APIBaseModel handles all serialization automatically
+    return [WorkflowModel(**workflow) for workflow in workflows]
 
 
 @router.get("/workflows/all", response_model=List[WorkflowModel])
@@ -163,4 +141,4 @@ async def get_all_workflows(
     result = await db.execute(workflows_query)
     workflows = result.unique().scalars().all()
 
-    return [WorkflowModel.from_orm(workflow) for workflow in workflows]
+    return [WorkflowModel.model_validate(workflow) for workflow in workflows]
