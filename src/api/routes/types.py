@@ -29,6 +29,11 @@ class WorkflowModel(APIBaseModel):
     deleted: bool = False
     description: Optional[str] = None
     cover_image: Optional[str] = None
+    
+    user_name: Optional[str] = None  # From SQL join with users table
+    user_icon: Optional[str] = None  # From fetch_user_icon()
+    latest_output: Optional[Dict[str, Any]] = None  # From post_process_output_data()
+    
     class Config:
         from_attributes = True
 

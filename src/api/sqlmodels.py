@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import enum
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, field_serializer
@@ -14,7 +14,13 @@ class APIBaseModel(BaseModel):
     def serialize_all_types(self, value: Any) -> Any:
         # Handle datetime - consistent with your existing logic
         if isinstance(value, datetime):
-            return value.isoformat()[:-3] + "Z"
+            # Ensure timezone-aware datetime is in UTC
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            else:
+                value = value.astimezone(timezone.utc)
+            # Use milliseconds precision and replace +00:00 with Z
+            return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
         
         # Handle UUID - convert to string
         elif isinstance(value, uuid.UUID):
@@ -22,7 +28,7 @@ class APIBaseModel(BaseModel):
         
         # Handle Decimal - convert to string (more precise than float)
         elif isinstance(value, Decimal):
-            return str(value)  # Changed from float to string for precision
+            return float(value)  # Changed from float to string for precision
         
         # Handle lists recursively
         elif isinstance(value, list):
