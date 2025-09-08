@@ -1,4 +1,5 @@
 import time
+import math
 
 from api.utils.multi_level_cache import multi_level_cached
 from .types import Model, GenerateUploadUrlRequest, GenerateUploadUrlResponse
@@ -9,6 +10,7 @@ import os
 import uuid
 from .utils import get_user_settings, select, generate_presigned_url, delete_s3_object
 from api.utils.storage_helper import get_s3_config
+from api.utils.retrieve_s3_config_helper import S3Config
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends
 from api.database import get_db
@@ -37,6 +39,55 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Volumes"])
+
+
+def calculate_part_size(file_size: int) -> int:
+    """Calculate appropriate part size based on file size"""
+    if file_size < 1024 * 1024 * 1024:  # < 1GB
+        return 5 * 1024 * 1024  # 5MB parts
+    elif file_size < 5 * 1024 * 1024 * 1024:  # < 5GB
+        return 10 * 1024 * 1024  # 10MB parts
+    elif file_size < 15 * 1024 * 1024 * 1024:  # < 15GB
+        return 25 * 1024 * 1024  # 25MB parts
+    elif file_size < 50 * 1024 * 1024 * 1024:  # < 50GB
+        return 50 * 1024 * 1024  # 50MB parts
+    else:  # > 50GB
+        return 100 * 1024 * 1024  # 100MB parts
+
+
+async def create_multipart_upload(s3_config: S3Config, bucket: str, object_key: str, content_type: str) -> str:
+    """Create multipart upload and return upload ID"""
+    from api.utils.s3_client import S3ClientManager
+    
+    async with await S3ClientManager.get_s3_client(s3_config) as s3:
+        response = await s3.create_multipart_upload(
+            Bucket=bucket,
+            Key=object_key,
+            ContentType=content_type
+        )
+        return response['UploadId']
+
+
+async def generate_multipart_presigned_urls(s3_config: S3Config, bucket: str, object_key: str, upload_id: str, part_count: int) -> List[str]:
+    """Generate presigned URLs for each part"""
+    from api.utils.s3_client import S3ClientManager
+    
+    part_urls = []
+    async with await S3ClientManager.get_s3_client(s3_config) as s3:
+        for part_number in range(1, part_count + 1):
+            url = await s3.generate_presigned_url(
+                'upload_part',
+                Params={
+                    'Bucket': bucket,
+                    'Key': object_key,
+                    'PartNumber': part_number,
+                    'UploadId': upload_id
+                },
+                ExpiresIn=3600
+            )
+            part_urls.append(url)
+    return part_urls
+
 
 async def retrieve_model_volumes(
     request: Request, db: AsyncSession
@@ -1429,31 +1480,116 @@ async def generate_upload_url(
         
         object_key = f"temp-uploads/{owner_id}/{uuid.uuid4()}/{body.filename}"
         
-        presigned_url = generate_presigned_url(
-            bucket=bucket,
-            object_key=object_key,
-            region=region,
-            access_key=access_key,
-            secret_key=secret_key,
-            expiration=3600,  # 1 hour expiration
-            http_method="PUT",
-            content_type=body.contentType,
-            public=False,  # Keep uploads private
-            session_token=session_token
-        )
-        
-        if not presigned_url:
-            raise HTTPException(status_code=500, detail="Failed to generate upload URL")
-        
-        return GenerateUploadUrlResponse(
-            uploadUrl=presigned_url,
-            objectKey=object_key
-        )
+        # Check if file size exceeds multipart threshold (500MB)
+        if body.size > 500 * 1024 * 1024:
+            part_size = calculate_part_size(body.size)
+            part_count = math.ceil(body.size / part_size)
+            
+            upload_id = await create_multipart_upload(s3_config, bucket, object_key, body.contentType)
+            part_urls = await generate_multipart_presigned_urls(s3_config, bucket, object_key, upload_id, part_count)
+            
+            return GenerateUploadUrlResponse(
+                uploadUrl="",  # Not used for multipart
+                objectKey=object_key,
+                isMultipart=True,
+                uploadId=upload_id,
+                partUrls=part_urls,
+                partSize=part_size
+            )
+        else:
+            presigned_url = generate_presigned_url(
+                bucket=bucket,
+                object_key=object_key,
+                region=region,
+                access_key=access_key,
+                secret_key=secret_key,
+                expiration=3600,  # 1 hour expiration
+                http_method="PUT",
+                content_type=body.contentType,
+                public=False,  # Keep uploads private
+                session_token=session_token
+            )
+            
+            if not presigned_url:
+                raise HTTPException(status_code=500, detail="Failed to generate upload URL")
+            
+            return GenerateUploadUrlResponse(
+                uploadUrl=presigned_url,
+                objectKey=object_key,
+                isMultipart=False
+            )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error generating upload URL: {str(e)}")
+
+
+class CompleteMultipartUploadRequest(BaseModel):
+    objectKey: str
+    uploadId: str
+    parts: List[Dict[str, Union[str, int]]]
+
+
+@router.post("/volume/file/complete-multipart-upload")
+async def complete_multipart_upload(
+    request: Request,
+    body: CompleteMultipartUploadRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Complete multipart upload"""
+    try:
+        s3_config = await get_s3_config(request, db)
+        bucket = s3_config.bucket
+        
+        from api.utils.s3_client import S3ClientManager
+        
+        async with await S3ClientManager.get_s3_client(s3_config) as s3:
+            await s3.complete_multipart_upload(
+                Bucket=bucket,
+                Key=body.objectKey,
+                UploadId=body.uploadId,
+                MultipartUpload={'Parts': body.parts}
+            )
+        
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error completing multipart upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AbortMultipartUploadRequest(BaseModel):
+    objectKey: str
+    uploadId: str
+
+
+@router.post("/volume/file/abort-multipart-upload")
+async def abort_multipart_upload(
+    request: Request,
+    body: AbortMultipartUploadRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Abort multipart upload and cleanup"""
+    try:
+        s3_config = await get_s3_config(request, db)
+        bucket = s3_config.bucket
+        
+        from api.utils.s3_client import S3ClientManager
+        
+        async with await S3ClientManager.get_s3_client(s3_config) as s3:
+            await s3.abort_multipart_upload(
+                Bucket=bucket,
+                Key=body.objectKey,
+                UploadId=body.uploadId
+            )
+        
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error aborting multipart upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
         raise HTTPException(status_code=500, detail=str(e))
 
 

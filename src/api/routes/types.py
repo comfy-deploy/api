@@ -754,3 +754,7 @@ class GenerateUploadUrlRequest(BaseModel):
 class GenerateUploadUrlResponse(BaseModel):
     uploadUrl: str
     objectKey: str
+    isMultipart: Optional[bool] = False
+    uploadId: Optional[str] = None
+    partUrls: Optional[List[str]] = None
+    partSize: Optional[int] = None
