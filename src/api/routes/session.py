@@ -626,8 +626,24 @@ async def increase_timeout_2(
     if not current_timeout_end_str:
         raise HTTPException(status_code=404, detail="Timeout end not found for session")
 
+    # Calculate the new timeout end time (common logic)
+    current_timeout_end = datetime.fromisoformat(current_timeout_end_str)
+    new_timeout_end = current_timeout_end + timedelta(minutes=body.minutes)
+
+    # Check maximum 1 hour remaining time limit
+    current_time = datetime.utcnow()
+    new_remaining_minutes = (new_timeout_end - current_time).total_seconds() / 60
+    
+    max_remaining_minutes = 60  # 1 hour limit
+    if new_remaining_minutes > max_remaining_minutes:
+        raise HTTPException(
+            status_code=400,
+            detail="You can't have more than 1 hour of time remaining. \n"
+            "If you want to keep the session running, you can turn on 'Auto Expand Session' in the Menu (Top right hand corner) > Configuration."
+        )
+
+    # Apply restrictions only for free plan users with low credit balance
     if plan == "free":
-        # Get current user credit balance
         user_id = request.state.current_user.get("user_id")
         org_id = request.state.current_user.get("org_id")
         current_credit_balance = await get_user_credit_balance(user_id, org_id)
@@ -637,10 +653,6 @@ async def increase_timeout_2(
             max_timeout_minutes = 30
             if not gpu_event.start_time:
                 raise HTTPException(status_code=400, detail="Session has not started yet")
-
-            # Calculate the new timeout end time
-            current_timeout_end = datetime.fromisoformat(current_timeout_end_str)
-            new_timeout_end = current_timeout_end + timedelta(minutes=body.minutes)
 
             # Calculate total session duration from start to new end time
             total_duration = (new_timeout_end - gpu_event.start_time).total_seconds() / 60
@@ -656,14 +668,6 @@ async def increase_timeout_2(
                     f"Maximum remaining time: {max(0, int(max_timeout_minutes - elapsed_minutes))} minutes. "
                     f"Current credit balance: ${current_credit_balance:.2f}",
                 )
-        else:
-            # User has sufficient credit balance (>= $5), no timeout restrictions
-            current_timeout_end = datetime.fromisoformat(current_timeout_end_str)
-            new_timeout_end = current_timeout_end + timedelta(minutes=body.minutes)
-    else:
-        # Calculate the new timeout end time for non-free plans
-        current_timeout_end = datetime.fromisoformat(current_timeout_end_str)
-        new_timeout_end = current_timeout_end + timedelta(minutes=body.minutes)
 
     # Update the timeout end time in Redis
     if redis is not None:
