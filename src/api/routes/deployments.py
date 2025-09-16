@@ -211,6 +211,7 @@ class DeploymentUpdate(BaseModel):
     run_timeout: Optional[int] = None
     idle_timeout: Optional[int] = None
     keep_warm: Optional[int] = None
+    environment: Optional[DeploymentEnvironment] = None
 
 
 class UserInfo(BaseModel):
@@ -549,6 +550,40 @@ async def update_deployment(
         # Update workflow version if provided
         if deployment_data.workflow_version_id:
             deployment.workflow_version_id = deployment_data.workflow_version_id
+
+        # Handle environment update if provided
+        if deployment_data.environment is not None:
+            current_user = request.state.current_user
+            user_id = current_user["user_id"]
+            org_id = current_user.get("org_id")
+            
+            isPublicShare = deployment_data.environment == "public-share"
+            isPrivateShare = deployment_data.environment == "private-share"
+            isCommunityShare = deployment_data.environment == "community-share"
+            isShare = isPublicShare or isPrivateShare or isCommunityShare
+            
+            # Get workflow for slug generation
+            workflow_result = await db.execute(
+                select(Workflow).where(Workflow.id == deployment.workflow_id)
+            )
+            workflow_obj = workflow_result.scalar_one_or_none()
+            if not workflow_obj:
+                raise HTTPException(status_code=404, detail="Workflow not found")
+            
+            # Handle share slug generation
+            generated_slug = None
+            if isShare:
+                # Always generate new slug for share environments
+                current_user_id = org_id if org_id else user_id
+                
+                generated_slug = await slugify(
+                    workflow_obj.name, current_user_id, from_nanoid=False
+                )
+            
+            # Update environment
+            deployment.environment = deployment_data.environment
+            if deployment_data.environment in ["public-share", "community-share"]:
+                deployment.share_slug = generated_slug
 
         # Update machine-related fields and other deployment settings
         deployment = await update_deployment_with_machine(
