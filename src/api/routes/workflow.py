@@ -1,7 +1,6 @@
 import asyncio
 from decimal import Decimal
 import json
-import os
 from uuid import UUID, uuid4
 import uuid
 from api.routes.deployments import DeploymentCreate, create_deployment
@@ -9,10 +8,7 @@ from api.utils.inputs import get_inputs_from_workflow_api
 from api.utils.outputs import get_outputs_from_workflow
 from sqlalchemy.orm import defer
 from pydantic import BaseModel
-
-from .workflows import CustomJSONEncoder
 from .utils import (
-    UserIconData,
     ensure_run_timeout,
     fetch_user_icon,
     get_user_settings,
@@ -26,6 +22,7 @@ from .types import (
     SharedWorkflowModel,
     CreateSharedWorkflowRequest,
     SharedWorkflowListResponse,
+    WorkflowGalleryItem,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,9 +30,8 @@ from sqlalchemy.orm import joinedload
 
 from .utils import post_process_outputs, select
 from sqlalchemy import func
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from fastapi.responses import JSONResponse
-from pprint import pprint
 from sqlalchemy import desc
 from sqlalchemy import text
 from api.models import (
@@ -47,7 +43,6 @@ from api.models import (
     WorkflowRunWithExtra,
     WorkflowVersion,
     WorkflowRunOutput,
-    SerializableMixin,
 )
 from api.models import SharedWorkflow
 from api.database import get_db
@@ -672,13 +667,8 @@ async def get_workflow(
 
     # Convert the result to a dict
     workflow_dict = dict(workflow._mapping)
-    # Parse the JSON string of versions back into a list of dicts
-    # workflow_dict['versions'] = json.loads(workflow_dict['versions'])
 
-    return JSONResponse(
-        status_code=200,
-        content=json.loads(json.dumps(workflow_dict, cls=CustomJSONEncoder)),
-    )
+    return WorkflowModel.model_validate(workflow_dict)
 
 
 @router.get("/workflow/{workflow_id}/version/{version}", response_model=WorkflowVersionModel)
@@ -734,7 +724,7 @@ async def get_workflow_version_by_id(
     return JSONResponse(content=workflow_version.to_dict())
 
 
-@router.get("/workflow/{workflow_id}/gallery")
+@router.get("/workflow/{workflow_id}/gallery", response_model=List[WorkflowGalleryItem])
 async def get_workflows_gallery(
     request: Request,
     workflow_id: str,
@@ -842,9 +832,8 @@ async def get_workflows_gallery(
         if output["data"]:
             await post_process_output_data(output["data"], user_settings)
 
-    return JSONResponse(
-        status_code=200, content=json.loads(json.dumps(outputs, cls=CustomJSONEncoder))
-    )
+    # Convert to Pydantic models - APIBaseModel handles all serialization automatically
+    return [WorkflowGalleryItem(**output) for output in outputs]
 
 
 @router.get("/workflow/{workflow_id}/deployments")

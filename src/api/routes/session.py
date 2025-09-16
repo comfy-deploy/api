@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 import inspect
 import os
 from pprint import pprint
+
+from api.sqlmodels import APIBaseModel
 from .internal import ensure_redis_stream_expires, insert_log_entry_to_redis, clear_redis_log, publish_progress_update
 from api.routes.machines import (
     GitCommitHash,
@@ -143,7 +145,7 @@ async def get_comfy_runner_for_workspace(
 
     return runner
 
-class SessionResponse(BaseModel):
+class SessionResponse(APIBaseModel):
     id: str = Field(..., description="The session ID")
     session_id: str = Field(..., description="The session ID", deprecated=True)
     gpu_event_id: str = Field(..., description="The GPU event ID")

@@ -104,7 +104,7 @@ async def run_update(
         "x-speakeasy-name-override": "get",
     },
 )
-@router.get("/run", response_model=WorkflowRunModel, include_in_schema=False)
+# @router.get("/run", response_model=WorkflowRunModel, include_in_schema=False)
 async def get_run(request: Request, run_id: UUID, queue_position: bool = False, db: AsyncSession = Depends(get_db), background_tasks: BackgroundTasks = BackgroundTasks()):
     current_user = request.state.current_user
     user_id = current_user["user_id"]
@@ -202,7 +202,7 @@ async def get_run(request: Request, run_id: UUID, queue_position: bool = False, 
     await post_process_outputs(run.outputs, user_settings)
     # Convert the run to a dictionary and remove the run_log
     # run_dict = {k: v for k, v in vars(run).items() if k != "run_log"}
-
+    
     return run.to_dict()
 
 

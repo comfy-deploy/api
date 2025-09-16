@@ -31,11 +31,6 @@ metadata = MetaData(schema="comfyui_deploy")
 class SerializableMixin:
     def to_dict(self):
         try:
-            # return {
-            #     c.key: self._serialize_value(getattr(self, c.key))
-            #     for c in sqlalchemy_inspect(self.__class__).mapper.column_attrs
-            #     if hasattr(self, c.key)
-            # }
             return {
                 attr: self._serialize_value(getattr(self, attr))
                 for attr in self.__dict__
@@ -46,24 +41,37 @@ class SerializableMixin:
             return {}
 
     def _serialize_value(self, value):
-        if isinstance(value, uuid.UUID):
-            return str(value)
-        # if isinstance(value, datetime):
-        #     return value
-        # return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+        # Handle datetime - consistent with APIBaseModel
         if isinstance(value, datetime):
-            # .replace(tzinfo=timezone.utc)
-            return value.isoformat()[:-3] + "Z"
-            # return value.isoformat() + "Z"
-        if isinstance(value, list):
-            return [self._serialize_value(item) for item in value]
-        if isinstance(value, dict):
-            return {k: self._serialize_value(v) for k, v in value.items()}
-        if isinstance(value, Decimal):
+            # Ensure timezone-aware datetime is in UTC
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            else:
+                value = value.astimezone(timezone.utc)
+            # Use milliseconds precision and replace +00:00 with Z
+            return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        
+        # Handle UUID - convert to string
+        elif isinstance(value, uuid.UUID):
             return str(value)
-        # Check if the object has a to_dict method and is potentially a SerializableMixin
-        if hasattr(value, "to_dict") and callable(value.to_dict):
+        
+        # Handle Decimal - convert to float (matching APIBaseModel)
+        elif isinstance(value, Decimal):
+            return float(value)
+        
+        # Handle lists recursively
+        elif isinstance(value, list):
+            return [self._serialize_value(item) for item in value]
+        
+        # Handle dicts recursively
+        elif isinstance(value, dict):
+            return {k: self._serialize_value(v) for k, v in value.items()}
+        
+        # Handle objects with to_dict method (like other SerializableMixin instances)
+        elif hasattr(value, "to_dict") and callable(value.to_dict):
             return value.to_dict()
+        
+        # Return as-is for all other types
         return value
 
     def to_json(self):
