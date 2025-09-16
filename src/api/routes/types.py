@@ -1,12 +1,54 @@
 from pydantic import BaseModel
 from typing import List
 from enum import Enum
-from api.sqlmodels import WorkflowRunStatus, APIBaseModel
-from typing import Annotated, Literal, Optional, Union, List, Dict, Any
-from pydantic import Field, RootModel, WithJsonSchema
+
+from api.sqlmodels import WorkflowRunStatus
+
+
+# from sqlalchemy import select
+from typing import Annotated, Literal, Optional, Union
+from pydantic import ConfigDict, Field, RootModel, WithJsonSchema
+from typing import Dict, Any
 from uuid import UUID
 from datetime import datetime
+from pydantic import Field
+from typing import Optional, List
+from pydantic.json_schema import GenerateJsonSchema
 from pydantic.json_schema import SkipJsonSchema
+
+# from datetime import datetime
+from uuid import UUID
+
+from pydantic import Field
+from enum import Enum
+
+from pydantic import BaseModel
+
+# class CustomJsonSchemaGenerator(GenerateJsonSchema):
+#     def generate(self, schema, mode='validation'):
+#         print("hi")
+#         json_schema = super().generate(schema, mode=mode)
+#         if 'properties' in json_schema:
+#             # Filter out hidden properties
+#             json_schema['properties'] = {
+#                 k: v for k, v in json_schema['properties'].items()
+#                 if not v.get('hidden', False)
+#             }
+#         return json_schema
+
+# class BaseModel(_BaseModel):
+#     model_config = {
+#         "schema_generator": CustomJsonSchemaGenerator,
+#     }
+
+# class WorkflowRunOutputModel(BaseModel):
+#     id: UUID
+#     run_id: UUID
+#     data: Optional[Dict[str, Any]]
+#     node_meta: Optional[Dict[str, Any]]
+#     created_at: datetime
+#     updated_at: datetime
+
 class MachineGPU(str, Enum):
     CPU = "CPU"
     T4 = "T4"
@@ -19,7 +61,14 @@ class MachineGPU(str, Enum):
     H200 = "H200"
     B200 = "B200"
 
-class WorkflowModel(APIBaseModel):
+def format_datetime(dt: Optional[datetime]) -> Optional[str]:
+    print(dt)
+    if dt is None:
+        return None
+    return dt.isoformat()[:-3] + "Z"
+
+
+class WorkflowModel(BaseModel):
     id: UUID
     user_id: str
     org_id: Optional[str]
@@ -31,34 +80,16 @@ class WorkflowModel(APIBaseModel):
     deleted: bool = False
     description: Optional[str] = None
     cover_image: Optional[str] = None
-    
-    user_name: Optional[str] = None  # From SQL join with users table
-    user_icon: Optional[str] = None  # From fetch_user_icon()
-    latest_output: Optional[Dict[str, Any]] = None  # From post_process_output_data()
-    
     class Config:
         from_attributes = True
 
 
-class WorkflowListResponse(APIBaseModel):
+class WorkflowListResponse(BaseModel):
     workflows: List[WorkflowModel]
     query_length: int
 
 
-class WorkflowGalleryItem(APIBaseModel):
-    """Gallery item with output data and run metadata"""
-    output_id: UUID
-    run_id: UUID
-    user_id: str
-    origin: Optional[str]
-    data: Dict[str, Any]
-    node_meta: Optional[Dict[str, Any]]
-    run_duration: Optional[float]
-    cold_start: Optional[float]
-    queue_time: Optional[float]
-
-
-class MediaItem(APIBaseModel):
+class MediaItem(BaseModel):
     url: str
     type: str
     filename: str
@@ -68,7 +99,7 @@ class MediaItem(APIBaseModel):
     # output_id: Optional[str] = None
 
 
-class WorkflowRunOutputModel(APIBaseModel):
+class WorkflowRunOutputModel(BaseModel):
     id: UUID
     output_id: Optional[str] = None # user specified output id
     run_id: UUID
@@ -83,7 +114,7 @@ class WorkflowRunOutputModel(APIBaseModel):
         from_attributes = True
 
 
-class WorkflowRunWebhookBody(APIBaseModel):
+class WorkflowRunWebhookBody(BaseModel):
     run_id: str
     status: WorkflowRunStatus
     live_status: Optional[str]
@@ -91,7 +122,7 @@ class WorkflowRunWebhookBody(APIBaseModel):
     outputs: List[WorkflowRunOutputModel] = []
 
 
-class WorkflowRunModel(APIBaseModel):
+class WorkflowRunModel(BaseModel):
     id: UUID
     workflow_version_id: Optional[UUID]
     workflow_inputs: Optional[Any]
@@ -138,7 +169,7 @@ class WorkflowRunModel(APIBaseModel):
         from_attributes = True
 
 
-class WorkflowVersionModel(APIBaseModel):
+class WorkflowVersionModel(BaseModel):
     id: UUID
     workflow_id: UUID
     workflow: Dict[str, Any]
@@ -183,11 +214,11 @@ class MachineStatus(str, Enum):
 class WorkspaceGPU(str, Enum):
     RTX_4090 = "4090"
 
-class DockerCommand(APIBaseModel):
+class DockerCommand(BaseModel):
     when: Literal["before", "after"]
     commands: List[str]
 
-class MachineSharedFields(APIBaseModel):
+class MachineSharedFields(BaseModel):
     comfyui_version: Optional[str] = None
     gpu: Optional[MachineGPU] = None
     docker_command_steps: Optional[Dict[str, Any]] = None
@@ -261,7 +292,7 @@ class MachineModel(MachineSharedFields):
         from_attributes = True
 
 
-class WorkflowRequestShare(APIBaseModel):
+class WorkflowRequestShare(BaseModel):
     execution_mode: SkipJsonSchema[
         Optional[Literal["async", "sync", "sync_first_result", "stream"]]
     ] = Field(
@@ -443,17 +474,17 @@ CreateRunRequest = Union[
 ]
 
 
-class CreateRunBatchResponse(APIBaseModel):
+class CreateRunBatchResponse(BaseModel):
     batch_id: UUID
 
 
-class CreateRunResponse(APIBaseModel):
+class CreateRunResponse(BaseModel):
     run_id: UUID = Field(
         ..., description="The ID of the run, use this to get the run status and outputs"
     )
 
 
-class Input(APIBaseModel):
+class Input(BaseModel):
     prompt_id: str
     workflow_api: Optional[dict] = None
     inputs: Optional[dict]
@@ -462,23 +493,23 @@ class Input(APIBaseModel):
     file_upload_endpoint: str
 
 
-class LogDataContent(APIBaseModel):
+class LogDataContent(BaseModel):
     logs: str
     timestamp: datetime = Field(..., description="Timestamp in UTC")
 
 
-class LogUpdateEvent(APIBaseModel):
+class LogUpdateEvent(BaseModel):
     event: Literal["log_update"] = "log_update"
     data: LogDataContent
     # data: str
 
 
-class EventUpdate(APIBaseModel):
+class EventUpdate(BaseModel):
     event: Optional[str] = None
     data: Optional[Any] = None
 
 
-class EventUpdateEvent(APIBaseModel):
+class EventUpdateEvent(BaseModel):
     event: Literal["event_update"] = "event_update"
     # data: str
     data: EventUpdate
@@ -492,7 +523,7 @@ class RunStream(RootModel):
     root: Union[LogUpdateEvent, EventUpdateEvent] = Field(..., discriminator="event")
 
 
-class WorkflowRunNativeOutputModel(APIBaseModel):
+class WorkflowRunNativeOutputModel(BaseModel):
     prompt_id: str
     workflow_api_raw: Dict[str, Any]
     workflow: Optional[Dict[str, Any]]
@@ -506,14 +537,14 @@ class WorkflowRunNativeOutputModel(APIBaseModel):
         from_attributes = True
 
 
-class ModalVolFile(APIBaseModel):
+class ModalVolFile(BaseModel):
     path: str
     type: int
     mtime: int
     size: int
 
 
-class Model(APIBaseModel):
+class Model(BaseModel):
     id: UUID
     user_id: str
     org_id: Optional[str]
@@ -555,17 +586,17 @@ class DeploymentEnvironment(str, Enum):
     PREVIEW = "preview"
     COMMUNITY_SHARE = "community-share"
 
-class WorkflowWithName(APIBaseModel):
+class WorkflowWithName(BaseModel):
     id: UUID
     name: str
     cover_url: Optional[str] = None
     
-class MachineWithName(APIBaseModel):
+class MachineWithName(BaseModel):
     id: UUID
     name: str
 
 
-class InputModel(APIBaseModel):
+class InputModel(BaseModel):
     type: str
     class_type: str
     input_id: str
@@ -586,12 +617,12 @@ class InputModel(APIBaseModel):
     )
 
 
-class OutputModel(APIBaseModel):
+class OutputModel(BaseModel):
     class_type: str
     output_id: str
 
 
-class DeploymentModel(APIBaseModel):
+class DeploymentModel(BaseModel):
     id: UUID
     user_id: str
     org_id: Optional[str]
@@ -626,7 +657,7 @@ class DeploymentModel(APIBaseModel):
     class Config:
         from_attributes = True
 
-class DeploymentShareModel(APIBaseModel):
+class DeploymentShareModel(BaseModel):
     id: UUID
     user_id: str
     org_id: Optional[str]
@@ -638,13 +669,13 @@ class DeploymentShareModel(APIBaseModel):
     output_types: Optional[List[Dict[str, Any]]]
 
 # For official featured deployments only
-class DeploymentFeaturedModel(APIBaseModel):
+class DeploymentFeaturedModel(BaseModel):
     workflow: Dict[str, Optional[Any]]
     description: Optional[str] = None
     share_slug: Optional[str] = None
 
 
-class SharedWorkflowModel(APIBaseModel):
+class SharedWorkflowModel(BaseModel):
     id: UUID
     user_id: str
     org_id: Optional[str]
@@ -665,7 +696,7 @@ class SharedWorkflowModel(APIBaseModel):
         from_attributes = True
 
 
-class CreateSharedWorkflowRequest(APIBaseModel):
+class CreateSharedWorkflowRequest(BaseModel):
     workflow_id: UUID
     workflow_version_id: Optional[UUID] = None
     title: str
@@ -674,7 +705,7 @@ class CreateSharedWorkflowRequest(APIBaseModel):
     is_public: bool = True
 
 
-class SharedWorkflowListResponse(APIBaseModel):
+class SharedWorkflowListResponse(BaseModel):
     shared_workflows: List[SharedWorkflowModel]
     total: int
 
@@ -691,7 +722,7 @@ class GPUProviderType(str, Enum):
     COMFY_DEPLOY = "comfy-deploy"
 
 
-class GPUEventModel(APIBaseModel):
+class GPUEventModel(BaseModel):
     id: UUID
     user_id: str
     org_id: Optional[str]
@@ -730,7 +761,7 @@ class SubscriptionPlanStatus(str, Enum):
     PAUSED = "paused"
 
 
-class SubscriptionStatusType(APIBaseModel):
+class SubscriptionStatusType(BaseModel):
     stripe_customer_id: str
     user_id: str
     org_id: Optional[str]
@@ -747,7 +778,7 @@ class SubscriptionStatusType(APIBaseModel):
     last_invoice_timestamp: datetime
 
 
-class PlanInfo(APIBaseModel):
+class PlanInfo(BaseModel):
     plan: str = "free"
     status: str = "active"
     expires_at: Optional[int] = -1
@@ -755,12 +786,12 @@ class PlanInfo(APIBaseModel):
     spend_limit: float = Field(default=500.0)
 
 
-class GenerateUploadUrlRequest(APIBaseModel):
+class GenerateUploadUrlRequest(BaseModel):
     filename: str
     contentType: str
     size: int
 
 
-class GenerateUploadUrlResponse(APIBaseModel):
+class GenerateUploadUrlResponse(BaseModel):
     uploadUrl: str
     objectKey: str
