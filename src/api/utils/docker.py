@@ -252,7 +252,7 @@ async def generate_all_docker_commands(data: DepsBody, include_comfyuimanager: b
     docker_commands = [[y.replace("python -m pip install", "uv pip install") if enable_uv else y for y in x] for x in docker_commands]
     
     docker_commands = [
-        ["RUN python --version", "RUN apt-get update && apt-get install -y git wget curl unzip"],
+        ["RUN python --version", "RUN apt-get update && apt-get install -y git wget curl unzip build-essential pkg-config libcairo2-dev"],
         ["RUN apt-get install -y libgl1-mesa-glx libglib2.0-0"],
         ["RUN python -m pip install aioboto3"],
         ["RUN pip freeze"],
