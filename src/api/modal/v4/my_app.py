@@ -1684,12 +1684,48 @@ class _ComfyDeployRunner(BaseComfyDeployRunner):
     # - start_native_comfy_server
     # from ComfyUI, better to figure out cleaner way to do this
 
+    @staticmethod
+    def build_prompt_executor(execution, server):
+        """Construct a PromptExecutor the way the installed ComfyUI expects.
+
+        Upstream main.py computes the cache config inside prompt_worker; because
+        we fork prompt_worker we have to do it here too. Since ComfyUI v0.3.68
+        PromptExecutor takes `cache_args` (a dict) instead of `cache_size`, and
+        execute_async dereferences `self.cache_args["ram"]` unconditionally -- so
+        leaving it as the None default raises TypeError on the first run.
+
+        On v0.20.0+ that dereference sits *above* execute_async's try/except,
+        which killed this worker thread right after the execution_start event
+        and left runs wedged in "running" forever.
+
+        We deliberately pin CLASSIC rather than adopting v0.30's RAM_PRESSURE
+        default: CLASSIC is what this runner has always effectively used
+        (cache_type=False falls through to init_classic_cache), and RAM pressure
+        eviction is untested against the model caches we hold across Modal
+        memory snapshots.
+        """
+        import inspect
+
+        params = inspect.signature(execution.PromptExecutor.__init__).parameters
+
+        if "cache_args" not in params:
+            # v0.3.67 and older: (server, cache_type=False, cache_size=None)
+            return execution.PromptExecutor(server)
+
+        return execution.PromptExecutor(
+            server,
+            cache_type=execution.CacheType.CLASSIC,
+            # Every key execute_async may subscript, across v0.3.68 -> v0.30.x.
+            cache_args={"lru": 0, "ram": 0.0, "ram_inactive": 0.0},
+        )
+
     def prompt_worker(self, q, server):
         import execution
         import comfy
         import time
+        import traceback
 
-        e = execution.PromptExecutor(server)
+        e = self.build_prompt_executor(execution, server)
         self.__class__.prompt_executor = e
 
         last_gc_collect = 0
@@ -1711,16 +1747,65 @@ class _ComfyDeployRunner(BaseComfyDeployRunner):
                 prompt_id = item[1]
                 server.last_prompt_id = prompt_id
 
-                e.execute(item[2], prompt_id, item[3], item[4])
+                # v0.3.68+ moved sensitive keys (comfy.org auth tokens) out of
+                # extra_data into a 6th queue slot; merge them back like
+                # upstream prompt_worker does, or API nodes lose their auth.
+                extra_data = item[3]
+                if len(item) > 5 and isinstance(item[5], dict):
+                    extra_data = dict(extra_data)
+                    extra_data.update(item[5])
+
+                # Never let an executor exception kill this thread. Upstream
+                # gets away without a guard; we cannot, because a dead worker
+                # means task_done() is never called and the run hangs in
+                # "running" forever with no error surfaced to the user.
+                try:
+                    e.execute(item[2], prompt_id, extra_data, item[4])
+                    history_result = getattr(e, "history_result", None) or {
+                        "outputs": {},
+                        "meta": {},
+                    }
+                except Exception:
+                    tb = traceback.format_exc()
+                    logging.exception(
+                        "prompt_worker: unhandled error executing prompt %s", prompt_id
+                    )
+                    e.success = False
+                    # Don't reuse a stale history_result from a previous run.
+                    history_result = {"outputs": {}, "meta": {}}
+                    try:
+                        server.send_sync(
+                            "execution_error",
+                            {
+                                "prompt_id": prompt_id,
+                                "node_id": None,
+                                "node_type": None,
+                                "executed": [],
+                                "exception_message": tb,
+                                "exception_type": "PromptWorkerError",
+                                "traceback": tb.split("\n"),
+                                "current_inputs": {},
+                                "current_outputs": {},
+                            },
+                            server.client_id,
+                        )
+                    except Exception:
+                        logging.exception("prompt_worker: failed to report error")
+
                 need_gc = True
+                task_done_kwargs = {}
+                if "process_item" in inspect.signature(q.task_done).parameters:
+                    # v0.3.68+: strip the sensitive slot before it lands in /history
+                    task_done_kwargs["process_item"] = lambda p: p[:5] + p[6:]
                 q.task_done(
                     item_id,
-                    e.history_result,
+                    history_result,
                     status=execution.PromptQueue.ExecutionStatus(
                         status_str="success" if e.success else "error",
                         completed=e.success,
                         messages=e.status_messages,
                     ),
+                    **task_done_kwargs,
                 )
                 if server.client_id is not None:
                     server.send_sync(
