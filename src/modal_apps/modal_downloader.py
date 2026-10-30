@@ -10,6 +10,7 @@ import tempfile
 from huggingface_hub import snapshot_download, HfApi, hf_hub_download
 from huggingface_hub.utils import RepositoryNotFoundError, RevisionNotFoundError
 from pathlib import Path
+from urllib.parse import urlparse
 
 # deploy command: modal deploy modal_downloader.py::modal_downloader_app
 
@@ -20,6 +21,20 @@ image = Image.debian_slim().pip_install(
     "tqdm>=4.66.1",
     "aiohttp>=3.8.6",
 )
+
+def host_matches(url: str, domain: str) -> bool:
+    """True only for an https URL whose hostname is `domain` or a subdomain of it.
+
+    Used to decide whether a platform token may be attached to a request, so it
+    must never be a substring check on the raw URL.
+    """
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and (host == domain or host.endswith("." + domain))
+
 
 class ModelDownloadStatus(Enum):
     PROGRESS = "progress"
@@ -151,7 +166,7 @@ async def modal_download_file_task(
                 yield event
             downloaded_path = full_path
         elif upload_type == "civitai":
-            if "civitai.com" in download_url:
+            if host_matches(download_url, "civitai.com"):
                 download_url += f"{'&' if '?' in download_url else '?'}token={os.environ['CIVITAI_KEY']}"
             async for event in download_url_file(download_url, None):
                 yield event
