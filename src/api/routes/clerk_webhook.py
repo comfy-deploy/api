@@ -2,12 +2,19 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Request,
 )
+from fastapi.exceptions import RequestValidationError
 from datetime import datetime, timezone
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Optional, Any
+import base64
+import hashlib
+import hmac
 import logging
+import os
+import time
 
 from .utils import (
     select,
@@ -24,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 AUTUMN_SEATS_FEATURE_ID = "seats"
+SVIX_TIMESTAMP_TOLERANCE_SECONDS = 5 * 60
 
 router = APIRouter(
     tags=["Clerk Webhook"],
@@ -283,13 +291,65 @@ async def handle_org_membership_events(data: Dict[str, Any], db: AsyncSession) -
     )
 
 
+def verify_svix_signature(secret: Optional[str], headers, body: bytes) -> Optional[str]:
+    """Verify a Svix-signed webhook. Returns None if valid, else the failure reason.
+
+    https://docs.svix.com/receiving/verifying-payloads/how-manual
+    """
+    if not secret:
+        return "CLERK_WEBHOOK_SECRET not configured"
+    msg_id = headers.get("svix-id")
+    timestamp = headers.get("svix-timestamp")
+    signatures = headers.get("svix-signature")
+    if not (msg_id and timestamp and signatures):
+        return "missing svix headers"
+    try:
+        if abs(time.time() - int(timestamp)) > SVIX_TIMESTAMP_TOLERANCE_SECONDS:
+            return "timestamp outside tolerance"
+    except ValueError:
+        return "invalid svix-timestamp"
+    try:
+        key = base64.b64decode(secret.removeprefix("whsec_"))
+    except ValueError:
+        return "invalid secret format"
+    signed_content = f"{msg_id}.{timestamp}.".encode() + body
+    expected = base64.b64encode(hmac.new(key, signed_content, hashlib.sha256).digest())
+    for entry in signatures.split(" "):
+        version, _, signature = entry.partition(",")
+        if version == "v1" and hmac.compare_digest(signature.encode(), expected):
+            return None
+    return "no matching v1 signature"
+
+
 # Main webhook endpoint
 @router.post("/clerk/webhook", include_in_schema=False, response_model=WebhookResponse)
 async def handle_clerk_webhook(
-    webhook_data: ClerkWebhookData,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> WebhookResponse:
     """Main webhook endpoint that routes to appropriate handlers."""
+    body = await request.body()
+    svix_id = request.headers.get("svix-id")
+    failure = verify_svix_signature(os.getenv("CLERK_WEBHOOK_SECRET"), request.headers, body)
+    if failure:
+        if os.getenv("CLERK_WEBHOOK_ENFORCE_SIGNATURE", "false").lower() == "true":
+            logger.warning(f"Rejected Clerk webhook (svix-id={svix_id}): {failure}")
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        logger.warning(
+            f"Clerk webhook signature verification failed (svix-id={svix_id}): {failure}; "
+            "processing anyway because CLERK_WEBHOOK_ENFORCE_SIGNATURE is off"
+        )
+    else:
+        logger.debug(f"Clerk webhook signature verified (svix-id={svix_id})")
+
+    try:
+        webhook_data = ClerkWebhookData.model_validate_json(body)
+    except ValidationError as e:
+        # Mirror FastAPI's own 422 for an invalid body
+        raise RequestValidationError(
+            [{**err, "loc": ("body", *err["loc"])} for err in e.errors(include_url=False)]
+        )
+
     return await clerk_registry.handle_webhook(
         event_type=webhook_data.type,
         data=webhook_data.data,
