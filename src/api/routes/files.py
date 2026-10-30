@@ -351,7 +351,13 @@ async def delete_asset(
     
     # If it's a folder, delete all children
     if asset.is_folder:
-        children_query = select(Asset).where(Asset.path.like(f"{asset.path}/%"))
+        # Scope to the caller's tenant and escape LIKE wildcards so the match is a literal prefix
+        escaped_path = asset.path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        children_query = (
+            select(Asset)
+            .apply_org_check(request)
+            .where(Asset.path.like(f"{escaped_path}/%", escape="\\"))
+        )
         children = await db.execute(children_query)
         for child in children.scalars():
             await db.delete(child)
