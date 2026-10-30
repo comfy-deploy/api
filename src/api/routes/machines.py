@@ -894,7 +894,7 @@ async def update_machine_with_secret(
         secret_id = request_body.secret_id
 
         machine_query = await db.execute(
-            select(Machine).where(Machine.id == machine_id)
+            select(Machine).where(Machine.id == machine_id).apply_org_check(request)
         )
         machine = machine_query.scalars().first()
         if not machine:
@@ -1057,13 +1057,14 @@ async def get_all_secrets(
 
 @router.get("/machine/{machine_id}/secrets/linked")
 async def get_all_linked_machine_secrets(
+    request: Request,
     machine_id: UUID,
     db: AsyncSession = Depends(get_db)
 ):
     try:
         # Verify the machine exists and user has access
         machine_query = await db.execute(
-            select(Machine).where(Machine.id == machine_id)
+            select(Machine).where(Machine.id == machine_id).apply_org_check(request)
         )
         machine = machine_query.scalars().first()
         if not machine:
@@ -1136,7 +1137,7 @@ async def get_all_unlinked_machine_secrets(
     try:
         # Verify the machine exists and user has access
         machine_query = await db.execute(
-            select(Machine).where(Machine.id == machine_id)
+            select(Machine).where(Machine.id == machine_id).apply_org_check(request)
         )
         machine = machine_query.scalars().first()
         if not machine:
