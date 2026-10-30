@@ -282,6 +282,17 @@ def apply_org_check_direct(object, request: Request):
             raise HTTPException(status_code=403, detail="You are not authorized to access this resource")
 
 
+def check_admin_org(request: Request):
+    admin_org_id = os.getenv("ADMIN_ORG_ID")
+    if not admin_org_id:
+        raise HTTPException(status_code=500, detail="ADMIN_ORG_ID not configured")
+
+    org_id = request.state.current_user.get("org_id")
+    if not org_id or org_id != admin_org_id:
+        raise HTTPException(status_code=403, detail="Not authorized for admin operations")
+    return True
+
+
 def select(__ent0: _ColumnsClauseArgument[T], /, *entities: Any) -> OrgAwareSelect[T]:
     return OrgAwareSelect(__ent0, *entities)
 
