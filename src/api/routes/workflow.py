@@ -944,28 +944,28 @@ async def create_workflow(
             Workflow.org_id.is_(None)
         )
     
-    current_count = await db.execute(workflow_count_query)
-    current_count = current_count.scalar()
+    # current_count = await db.execute(workflow_count_query)
+    # current_count = current_count.scalar()
     
-    # Check if user can create another workflow
-    check_result = await autumn_client.check(
-        customer_id=customer_id,
-        feature_id="workflow_limit",
-        required_balance=current_count + 1,  # Check if they can have one more
-        with_preview=True
-    )
+    # # Check if user can create another workflow
+    # check_result = await autumn_client.check(
+    #     customer_id=customer_id,
+    #     feature_id="workflow_limit",
+    #     required_balance=current_count + 1,  # Check if they can have one more
+    #     with_preview=True
+    # )
     
-    if not check_result or not check_result.get("allowed", False):
-        preview_data = check_result.get("preview", {}) if check_result else {}
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": "Workflow limit reached",
-                "message": f"You have reached your workflow limit of {current_count} workflows.",
-                "current_count": current_count,
-                "preview": preview_data
-            }
-        )
+    # if not check_result or not check_result.get("allowed", False):
+    #     preview_data = check_result.get("preview", {}) if check_result else {}
+    #     return JSONResponse(
+    #         status_code=403,
+    #         content={
+    #             "error": "Workflow limit reached",
+    #             "message": f"You have reached your workflow limit of {current_count} workflows.",
+    #             "current_count": current_count,
+    #             "preview": preview_data
+    #         }
+    #     )
 
     # Validate JSON first
     try:

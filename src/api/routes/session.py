@@ -109,6 +109,18 @@ session_callback_endpoint = os.environ.get("CURRENT_API_URL")
 # print("status_endpoint", status_endpoint)
 
 
+# Workspace sessions are pinned to the non-optimized runner. The machine's
+# `optimized_runner` flag is deliberately ignored here: it was disabled for
+# sessions in 1efd895, the commit that shipped GPU memory snapshotting. Runs
+# (src/api/routes/run.py) still honour the flag -- only sessions are pinned.
+#
+# Every session call site MUST read this same value. Session creation and
+# increase_timeout each resolve the runner class by name, so if they disagree
+# increase_timeout spawns against a different Modal class than the one hosting
+# the session and the live container is never actually extended.
+SESSION_OPTIMIZED_RUNNER = False
+
+
 async def get_comfy_runner_for_workspace(
     machine_id: str, session_id: str | UUID, timeout: int, gpu: str, optimized_runner: bool = False
 ):
@@ -291,14 +303,9 @@ async def create_session_background_task(
     status_queue: Optional[asyncio.Queue] = None,
 ):
     send_log_entry(session_id, machine_id, "Creating session...", "info")
-    # try:
-    #     async with get_db_context() as db:
-    #         machine = await db.execute(select(Machine.optimized_runner).where(Machine.id == machine_id))
-    #         optimized_runner = machine.scalar_one()
-    # except Exception as e:
-    #     print("optimized_runner", e)
-    
-    optimized_runner = False
+
+    # See SESSION_OPTIMIZED_RUNNER -- sessions ignore Machine.optimized_runner.
+    optimized_runner = SESSION_OPTIMIZED_RUNNER
 
     print("optimized_runner", optimized_runner)
 
@@ -551,11 +558,12 @@ async def increase_timeout(
     if gpu_event is None:
         raise HTTPException(status_code=404, detail="GPU event not found")
     
-    machine = await db.execute(select(Machine.optimized_runner).where(Machine.id == body.machine_id))
-    optimized_runner = machine.scalar_one()
-
+    # Must match what create_session_background_task used, or we spawn against
+    # a different Modal class than the one hosting this session and the live
+    # container never gets extended. See SESSION_OPTIMIZED_RUNNER.
     await increase_timeout_task(
-        body.machine_id, body.session_id, body.timeout, body.gpu, optimized_runner
+        body.machine_id, body.session_id, body.timeout, body.gpu,
+        SESSION_OPTIMIZED_RUNNER,
     )
 
     # in the database we save the timeout in minutes
@@ -1436,27 +1444,27 @@ async def snapshot_session(
                 Machine.org_id.is_(None),
             )
 
-        current_count_result = await db.execute(machine_count_query)
-        current_count = current_count_result.scalar()
+        # current_count_result = await db.execute(machine_count_query)
+        # current_count = current_count_result.scalar()
 
-        check_result = await autumn_client.check(
-            customer_id=customer_id,
-            feature_id="machine_limit",
-            required_balance=current_count + 1,
-            with_preview=True,
-        )
+        # check_result = await autumn_client.check(
+        #     customer_id=customer_id,
+        #     feature_id="machine_limit",
+        #     required_balance=current_count + 1,
+        #     with_preview=True,
+        # )
 
-        if not check_result or not check_result.get("allowed", False):
-            preview_data = check_result.get("preview", {}) if check_result else {}
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "Machine limit reached",
-                    "message": f"You have reached your machine limit of {current_count} machines.",
-                    "current_count": current_count,
-                    "preview": preview_data,
-                },
-            )
+        # if not check_result or not check_result.get("allowed", False):
+        #     preview_data = check_result.get("preview", {}) if check_result else {}
+        #     raise HTTPException(
+        #         status_code=403,
+        #         detail={
+        #             "error": "Machine limit reached",
+        #             "message": f"You have reached your machine limit of {current_count} machines.",
+        #             "current_count": current_count,
+        #             "preview": preview_data,
+        #         },
+        #     )
         machine = Machine(
             id=uuid4(),
             type=MachineType.COMFY_DEPLOY_SERVERLESS,

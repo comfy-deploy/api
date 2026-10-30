@@ -31,6 +31,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/webhooks/autumn",
             "/api/platform/comfyui/auth-response",
             "/api/deployments/community",
+            "/api/platform/gpu-pricing",
+            "/api/platform/gpu-credit-schema",
         ]
         self.optional_auth_routes = [
             "/api/share/*",

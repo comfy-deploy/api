@@ -5,6 +5,8 @@
   "main": "src/api/server.py",
   "scripts": {
     "dev": "PORT=3011 uv run src/api/server.py",
+    "tunnel": "bun localtunnel.mjs",
+    "docker-compose": "docker compose up",
     "watch": "nodemon --watch src -e py,ts --exec \"bun test\"",
     "start": "uv run src/api/server.py",
     "migrate-production": "bun run migrate.mts",

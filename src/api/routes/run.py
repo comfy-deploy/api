@@ -127,22 +127,29 @@ async def get_run(request: Request, run_id: UUID, queue_position: bool = False, 
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     
-    deployment = None
-    if run.deployment_id is not None:
-        deployment = await db.execute(select(Deployment).where(Deployment.id == run.deployment_id))
-        deployment = deployment.unique().scalar_one_or_none()
-
-    # Permission check
-    if deployment is not None and (deployment.environment == "public-share" or deployment.environment == "community-share"):
-        # Public share, no permission check
-        if run.user_id == user_id:
-            pass
-        elif org_id is not None and run.org_id == org_id:
-            pass
-        else:
-            apply_org_check_direct(deployment, request)
-    else:
+    if run.deployment_id is None:
         apply_org_check_direct(run, request)
+    else:
+        # 2 cases:
+        # 1. if user is the creator of the run
+        if org_id is not None and run.org_id == org_id:
+            pass
+        elif run.user_id == user_id:
+            pass
+        # 2. if user is the creator of the deployment
+        else:
+            workflow = await db.execute(
+                select(Workflow).where(
+                    Workflow.id == run.workflow_id,
+                    Workflow.deleted.is_(False)
+                )
+            )
+            workflow = workflow.unique().scalar_one_or_none()
+            if workflow is not None:
+                apply_org_check_direct(workflow, request)
+            else:
+                # Workflow deleted or not found, deny access
+                raise HTTPException(status_code=403, detail="Access denied. ")
 
     run = cast(WorkflowRun, run)
     

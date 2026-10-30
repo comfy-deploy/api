@@ -88,8 +88,7 @@ async def optimize_image_on_demand(
         if existence_check:
             return await get_optimized_image_response(s3_config, optimized_key, user_settings, cache)
 
-        if is_public:
-            transform_config["is_public"] = True
+        transform_config["is_public"] = is_public
         
         # Trigger optimization asynchronously
         await trigger_image_optimization(s3_config, s3_key, optimized_key, transform_config)

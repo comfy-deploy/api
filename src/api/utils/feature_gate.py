@@ -43,7 +43,7 @@ AUTUMN_GUARD_RULES: List[Dict[str, Any]] = [
     {
         "pattern": "/api/machine/serverless",
         "methods": ["POST"],
-        "only_free": True,
+        "only_free": False,
         "mode": "all",
         "checks": [
             # Static pre-check; the route performs a dynamic count-aware check.
