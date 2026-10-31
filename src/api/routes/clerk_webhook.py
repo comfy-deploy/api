@@ -91,15 +91,15 @@ def get_username_fallback(user_data: Dict[str, Any]) -> str:
     if username:
         return username
     
-    first_name = user_data.get("first_name", "")
-    last_name = user_data.get("last_name", "")
+    first_name = user_data.get("first_name") or ""
+    last_name = user_data.get("last_name") or ""
     return f"{first_name}{last_name}".strip() or "Unknown"
 
 
 def get_name_fallback(user_data: Dict[str, Any]) -> str:
     """Extract display name with fallback logic."""
-    first_name = user_data.get("first_name", "")
-    last_name = user_data.get("last_name", "")
+    first_name = user_data.get("first_name") or ""
+    last_name = user_data.get("last_name") or ""
     full_name = f"{first_name} {last_name}".strip()
     
     if full_name:
