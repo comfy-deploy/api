@@ -14,20 +14,11 @@ from api.routes.deployments import (
     _deactivate_deployment_internal,
     ENVIRONMENT_TTL_MAP
 )
+from api.routes.utils import check_admin_org
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
-
-def check_admin_org(request: Request):
-    admin_org_id = os.getenv("ADMIN_ORG_ID")
-    if not admin_org_id:
-        raise HTTPException(status_code=500, detail="ADMIN_ORG_ID not configured")
-    
-    org_id = request.state.current_user.get("org_id")
-    if not org_id or org_id != admin_org_id:
-        raise HTTPException(status_code=403, detail="Not authorized for admin operations")
-    return True
 
 class TTLScanResponse(BaseModel):
     deactivated: List[DeploymentModel]

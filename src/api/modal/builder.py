@@ -4,13 +4,14 @@ from api.database import get_db_context
 from sqlalchemy import func, update, select
 from api.routes.internal import insert_log_entry_to_redis, ensure_redis_stream_expires
 from api.models import Deployment, Machine, MachineVersion
-from api.routes.utils import select
+from api.routes.utils import select, check_admin_org
 from pydantic import BaseModel, Field, field_validator
 from fastapi import (
     HTTPException,
     Query,
 )
 from fastapi.responses import JSONResponse
+import ast
 import os
 from enum import Enum
 import json
@@ -190,7 +191,9 @@ class KeepWarmBody(BaseModel):
 
 
 # Keep warm for workspace app
-@router.post("/modal/{app_name}/keep-warm")
+# Internal operations: product code calls these functions directly, never over
+# HTTP, so the HTTP routes are restricted to the admin org.
+@router.post("/modal/{app_name}/keep-warm", dependencies=[Depends(check_admin_org)])
 def set_machine_always_on(app_name: str, body: KeepWarmBody):
     try:
         model = modal.Cls.lookup(app_name, "ComfyDeployRunner")
@@ -215,7 +218,7 @@ class CancelFunctionBody(BaseModel):
     function_id: str
 
 
-@router.post("/modal/cancel-function")
+@router.post("/modal/cancel-function", dependencies=[Depends(check_admin_org)])
 def cancel_run(body: CancelFunctionBody):
     try:
         a = modal.functions.FunctionCall.from_id(body.function_id)
@@ -226,7 +229,7 @@ def cancel_run(body: CancelFunctionBody):
     return {"status": "success"}
 
 
-@router.post("/create")
+@router.post("/create", dependencies=[Depends(check_admin_org)])
 async def create_machine(
     item: BuildMachineItem,
     background_tasks: BackgroundTasks,
@@ -295,6 +298,20 @@ async def update_machine_version_build_time(
             .where(MachineVersion.id == machine_version_id)
             .values(updated_at=new_updated_at, status=status, build_log=build_log)
         )
+
+
+def render_config_source(config: dict) -> str:
+    """Render the machine config as Python source that is spliced into my_app.py.
+
+    Values include user-controlled strings (machine name, prestart_command,
+    extra_args, ...). repr() always emits a correctly escaped literal, and the
+    literal_eval round-trip guarantees the generated source is pure data, so a
+    value can never break out of its string and run code during `modal deploy`.
+    """
+    body = "{\n" + "".join(f"    {key!r}: {value!r},\n" for key, value in config.items()) + "}"
+    if ast.literal_eval(body) != config:
+        raise ValueError("Machine config does not round-trip as a Python literal")
+    return f"config = {body}"
 
 
 async def build_logic(item: BuildMachineItem):
@@ -381,20 +398,34 @@ async def build_logic(item: BuildMachineItem):
         with open(my_app_path, "r") as f:
             my_app_content = f.read()
         
-        # Generate the config dictionary string
-        config_lines = ["config = {"]
-        for key, value in config.items():
-            if isinstance(value, str):
-                config_lines.append(f"    '{key}': '{value}',")
-            else:
-                config_lines.append(f"    '{key}': {value},")
-        config_lines.append("}")
-        config_string = "\n".join(config_lines)
-        
+        try:
+            config_source = render_config_source(config)
+        except (ValueError, SyntaxError) as e:
+            logger.error(f"Refusing to build machine {item.machine_id}: invalid config ({e})")
+            machine_id_status[item.machine_id] = False
+            if not item.is_deployment:
+                build_log = json.dumps(
+                    [{"logs": "Invalid machine configuration.", "timestamp": time.time()}]
+                )
+                async with get_db_context() as db:
+                    await update_machine_version_build_time(
+                        db=db,
+                        machine_version_id=item.machine_version_id,
+                        status="error",
+                        build_log=build_log,
+                    )
+                    await db.execute(
+                        update(Machine)
+                        .where(Machine.id == item.machine_id)
+                        .values(status="error", build_log=build_log)
+                    )
+                    await db.commit()
+            return
+
         # Replace the import statement with the actual config
         modified_content = my_app_content.replace(
             "from cd_config import config",
-            config_string
+            config_source
         )
         
         # Write the modified content back to my_app.py

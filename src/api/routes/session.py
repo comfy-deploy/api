@@ -27,7 +27,7 @@ import logfire
 import modal
 from sqlalchemy.ext.asyncio import AsyncSession
 from upstash_redis.asyncio import Redis
-from .utils import select
+from .utils import select, get_org_or_user_condition
 from pydantic import BaseModel, Field
 
 from modal._output import OutputManager
@@ -45,7 +45,7 @@ from typing import Any, Dict, List, Optional, cast, Union
 from uuid import UUID, uuid4
 import logging
 from typing import Optional
-from sqlalchemy import update, func
+from sqlalchemy import update, func, false
 from fastapi import BackgroundTasks
 from api.utils.autumn import send_autumn_usage_event, get_autumn_customer, autumn_client
 
@@ -1184,19 +1184,51 @@ async def update_session_callback(
     request: Request,
     body: UpdateSessionCallbackBody,
 ) -> Dict[str, Any]:
-    # We should do an auth check here
+    values = dict(
+        tunnel_url=body.tunnel_url,
+        # Gonna override the modal_function_id with the sandbox_id
+        modal_function_id=body.sandbox_id,
+        start_time=datetime.now(),
+        machine_version_id=body.machine_version_id,
+    )
+    current_user = request.state.current_user
+    try:
+        owned = get_org_or_user_condition(GPUEvent, request)
+    except KeyError:  # token without user_id: can't own anything
+        owned = false()
+
     async with get_db_context() as db:
-        await db.execute(
+        result = await db.execute(
             update(GPUEvent)
             .where(GPUEvent.session_id == body.session_id)
-            .values(
-                tunnel_url=body.tunnel_url,
-                # Gonna override the modal_function_id with the sandbox_id
-                modal_function_id=body.sandbox_id,
-                start_time=datetime.now(),
-                machine_version_id=body.machine_version_id,
-            )
+            .where(owned)
+            .values(**values)
         )
+        if result.rowcount == 0:
+            exists = (
+                await db.execute(
+                    select(GPUEvent.id)
+                    .where(GPUEvent.session_id == body.session_id)
+                    .limit(1)
+                )
+            ).first()
+            if exists is not None:
+                if os.getenv("SESSION_CALLBACK_ENFORCE_OWNERSHIP", "false").lower() == "true":
+                    logger.warning(
+                        f"Rejected session callback for session {body.session_id}: caller "
+                        f"user_id={current_user.get('user_id')} org_id={current_user.get('org_id')} does not own it"
+                    )
+                    raise HTTPException(status_code=404, detail="Session not found")
+                logger.warning(
+                    f"Session callback ownership mismatch for session {body.session_id}: caller "
+                    f"user_id={current_user.get('user_id')} org_id={current_user.get('org_id')}; "
+                    "updating anyway because SESSION_CALLBACK_ENFORCE_OWNERSHIP is off"
+                )
+                await db.execute(
+                    update(GPUEvent)
+                    .where(GPUEvent.session_id == body.session_id)
+                    .values(**values)
+                )
 
     return {"success": True}
 

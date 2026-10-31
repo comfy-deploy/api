@@ -54,6 +54,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Volumes"])
 
+def host_matches(url: str, domain: str) -> bool:
+    """True only for an https URL whose hostname is `domain` or a subdomain of it.
+
+    Used to decide whether a platform token may be attached to a request, so it
+    must never be a substring check on the raw URL.
+    """
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and (host == domain or host.endswith("." + domain))
+
+
 async def retrieve_model_volumes(
     request: Request, db: AsyncSession
 ) -> List[Dict[str, str]]:
@@ -500,7 +514,9 @@ async def handle_file_download(
         volume_name = await get_volume_name(request, db)
 
         user_settings = await get_user_settings(request, db)
-        hugging_face_token = os.environ.get("HUGGINGFACE_TOKEN")
+        is_hf_url = host_matches(download_url, "huggingface.co")
+        # The platform token is only ever sent to a real huggingface.co host
+        hugging_face_token = os.environ.get("HUGGINGFACE_TOKEN") if is_hf_url else None
         if user_settings is not None and user_settings.hugging_face_token:
             hugging_face_token = (
                 user_settings.hugging_face_token.strip() or hugging_face_token
@@ -530,7 +546,7 @@ async def handle_file_download(
                     db_model_id,
                     full_path,
                     volume_name,
-                    "huggingface" if "huggingface.co" in download_url else upload_type,
+                    "huggingface" if is_hf_url else upload_type,
                     hugging_face_token,
                 ):
                     # Update database with the event status
