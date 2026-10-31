@@ -311,6 +311,7 @@ VALID_FILTERS = {
 #     )
     
 async def get_runs_count(
+    request: Request,
     start_time: Optional[datetime] = None,
     end_time: Optional[datetime] = None,
     filters: Optional[Dict[str, Any]] = None
@@ -334,7 +335,7 @@ async def get_runs_count(
         int: Total number of runs matching the criteria
     """
     async with AsyncSessionLocal() as db:
-        query = select(func.count(WorkflowRun.id))
+        query = select(func.count(WorkflowRun.id)).apply_org_check_by_type(WorkflowRun, request)
         
         if start_time:
             query = query.filter(WorkflowRun.created_at >= start_time)
@@ -469,6 +470,7 @@ async def count_runs(
                 filters[key] = value
             
         count = await get_runs_count(
+            request,
             start_time=start_time,
             end_time=end_time,
             filters=filters if filters else None
