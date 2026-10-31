@@ -26,6 +26,16 @@ router = APIRouter(tags=["Comfy Proxy"])
 
 COMFY_API_KEY = os.getenv("COMFY_API_KEY")
 
+
+def _redact_headers(headers) -> dict:
+    """Copy of headers safe for logging: credential-bearing values are masked."""
+    return {
+        k: "[REDACTED]"
+        if any(s in k.lower() for s in ("authorization", "cookie", "token", "secret", "key"))
+        else v
+        for k, v in headers.items()
+    }
+
 # Utility functions copied from files.py
 def custom_nanoid(size=16):
     alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -299,7 +309,7 @@ async def proxy_to_comfy_org(
     # Log request details
     logfire.info(f"Proxying {request.method} request to: {target_url}")
     logfire.info(f"Query parameters: {query_params}")
-    logfire.info(f"Request headers: {dict(request.headers)}")
+    logfire.info(f"Request headers: {_redact_headers(request.headers)}")
     
     # Prepare headers (exclude host and connection headers)
     headers = {}
@@ -314,7 +324,7 @@ async def proxy_to_comfy_org(
     if "multipart/form-data" in content_type.lower():
         logfire.info(f"Handling multipart request with Content-Type: {content_type}")
         logfire.info(f"Body size: {len(body) if body else 0} bytes")
-        logfire.info(f"Headers being sent: {headers}")
+        logfire.info(f"Headers being sent: {_redact_headers(headers)}")
 
     try:
         async with httpx.AsyncClient() as client:
@@ -336,11 +346,11 @@ async def proxy_to_comfy_org(
                     if key.lower() not in ["connection", "content-encoding", "content-length"]:
                         response_headers[key] = value
                         
-                logfire.info("Proxied request", extra={"response": response.status_code, "response_headers": response_headers})
+                logfire.info("Proxied request", extra={"response": response.status_code, "response_headers": _redact_headers(response_headers)})
                 
                 # Log response details for debugging
                 logfire.info(f"Response status: {response.status_code}")
-                logfire.info(f"Response headers: {dict(response.headers)}")
+                logfire.info(f"Response headers: {_redact_headers(response.headers)}")
                 logfire.info(f"Response content length: {len(response.content)} bytes")
                 
                 # Return the proxied response AS-IS (simple proxy)

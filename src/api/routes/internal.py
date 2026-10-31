@@ -17,7 +17,7 @@ from fastapi import (
 import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import UUID4, BaseModel, Field
 from typing import Optional, Any, cast
 from datetime import datetime
@@ -61,6 +61,7 @@ from fastapi import Depends
 from api.utils.autumn import send_autumn_usage_event, autumn_client
 
 from upstash_redis.asyncio import Redis
+from cachetools import TTLCache
 from .log import cancel_active_streams, delayed_archive_logs_for_run, is_terminal_status, signal_stream_end
 
 router = APIRouter()
@@ -353,6 +354,51 @@ async def publish_progress_update(
 endStatuses = ["success", "failed", "timeout", "cancelled"]
 
 
+_cross_tenant_warned: TTLCache = TTLCache(maxsize=5000, ttl=600)
+
+
+def _cross_tenant(flag: str, what: str, row_user_id, row_org_id, caller: dict, **ids) -> bool:
+    """Tenant rule of get_org_or_user_condition, applied to an already-loaded row.
+
+    Logs a WARNING on mismatch. Returns True (caller must reject) only when the
+    `flag` env var is "true"; otherwise the request carries on unchanged (shadow mode).
+    """
+    caller_org_id = caller.get("org_id")
+    if caller_org_id:
+        if row_org_id == caller_org_id:
+            return False
+    elif row_user_id == caller.get("user_id") and row_org_id is None:
+        return False
+
+    enforce = os.getenv(flag, "false").lower() == "true"
+    # update-run fires per log line; warn once per target per 10 minutes, not per call
+    dedupe_key = (what, enforce, tuple(sorted((k, str(v)) for k, v in ids.items())))
+    if dedupe_key in _cross_tenant_warned:
+        return enforce
+    _cross_tenant_warned[dedupe_key] = True
+    context = {
+        "caller_user_id": caller.get("user_id"),
+        "caller_org_id": caller_org_id,
+        "caller_token_type": caller.get("token_type"),
+        "target_user_id": row_user_id,
+        "target_org_id": row_org_id,
+        **{k: str(v) if v is not None else None for k, v in ids.items()},
+    }
+    logger.warning(
+        f"{what} tenant mismatch ({'rejected' if enforce else f'allowed, {flag} is off'}): "
+        + " ".join(f"{k}={v}" for k, v in context.items()),
+        extra=context,
+    )
+    return enforce
+
+
+def _forbidden():
+    return JSONResponse(
+        status_code=403,
+        content={"detail": "You are not authorized to access this resource"},
+    )
+
+
 @async_lru_cache(maxsize=1000)
 async def get_cached_workflow_run(run_id: str, db: AsyncSession):
     return await get_workflow_run(run_id, db)
@@ -385,7 +431,24 @@ async def update_run(
             fixed_time = updated_at
 
             workflow_run = await get_cached_workflow_run(body.run_id, db)
-            
+
+            # O(1) ownership check on the run already fetched above (no extra query).
+            if workflow_run is not None and _cross_tenant(
+                "UPDATE_RUN_ENFORCE_OWNERSHIP",
+                "update-run",
+                workflow_run.user_id,
+                workflow_run.org_id,
+                getattr(request.state, "current_user", None) or {},
+                run_id=body.run_id,
+                machine_id=workflow_run.machine_id,
+                deployment_id=workflow_run.deployment_id,
+                status=body.status,
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You are not authorized to access this resource",
+                )
+
             if workflow_run is not None and workflow_run.user_id in blocking_log_streaming_user_id:
                 is_blocking_log_update = True
                 
@@ -854,13 +917,9 @@ async def create_gpu_event(
 
     # Get token data from request
     token = request.headers.get("authorization", "").replace("Bearer ", "")
-    if not token:
-        return {"error": "user_id required"}, 404
-
-    token_data = await parse_jwt(token)
-
-    if not token_data.get("user_id"):
-        return {"error": "user_id required"}, 404
+    token_data = await parse_jwt(token) if token else None
+    if not token_data or not token_data.get("user_id"):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
 
     final_user_id = user_id or token_data["user_id"]
     final_org_id = org_id if org_id else token_data.get("org_id", None)
@@ -874,6 +933,17 @@ async def create_gpu_event(
                 )
                 gpu_event = gpu_event.scalar_one_or_none()
                 if gpu_event:
+                    if _cross_tenant(
+                        "GPU_EVENT_ENFORCE_OWNERSHIP",
+                        "gpu_event gpu_start (session)",
+                        gpu_event.user_id,
+                        gpu_event.org_id,
+                        token_data,
+                        event_id=gpu_event.id,
+                        session_id=session_id,
+                        machine_id=machine_id,
+                    ):
+                        return _forbidden()
                     gpu_event.start_time = datetime.fromisoformat(timestamp)
                     # gpu_event.modal_function_id = modal_function_id
                     await db.commit()
@@ -894,6 +964,19 @@ async def create_gpu_event(
                     if machine:
                         final_user_id = machine.user_id
                         final_org_id = machine.org_id
+
+                # The tenant that would be billed must be the token's tenant.
+                if _cross_tenant(
+                    "GPU_EVENT_ENFORCE_OWNERSHIP",
+                    "gpu_event gpu_start",
+                    final_user_id,
+                    final_org_id,
+                    token_data,
+                    machine_id=machine_id,
+                    body_user_id=user_id,
+                    body_org_id=org_id,
+                ):
+                    return _forbidden()
 
                 gpu_event = GPUEvent(
                     id=uuid4(),
@@ -936,6 +1019,19 @@ async def create_gpu_event(
 
             result = await db.execute(stmt)
             event = result.scalar_one()
+            # Checked before commit: in enforce mode the UPDATE is rolled back.
+            if _cross_tenant(
+                "GPU_EVENT_ENFORCE_OWNERSHIP",
+                "gpu_event gpu_end",
+                event.user_id,
+                event.org_id,
+                token_data,
+                event_id=event.id,
+                session_id=event.session_id,
+                machine_id=machine_id,
+            ):
+                await db.rollback()
+                return _forbidden()
             await db.commit()
             
             # Track GPU concurrency change (-1 for gpu_end)

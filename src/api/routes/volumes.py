@@ -1425,6 +1425,26 @@ class HuggingfaceModel(BaseModel):
 class CivitaiModel(BaseModel):
     url: str
 
+def check_upload_key_owner(request: Request, key: str) -> None:
+    """Upload keys are minted as temp-uploads/{org_id or user_id}/{uuid}/{filename}.
+
+    S3 binds an UploadId to its key, so scoping the key also scopes the upload id.
+    """
+    current_user = request.state.current_user
+    owner_id = current_user.get("org_id") or current_user.get("user_id")
+    if key.startswith(f"temp-uploads/{owner_id}/") and ".." not in key.split("/"):
+        return
+    if os.getenv("VOLUME_UPLOAD_ENFORCE_OWNERSHIP", "false").lower() == "true":
+        logger.warning(
+            f"Rejected upload key {key!r}: caller user_id={current_user.get('user_id')} "
+            f"org_id={current_user.get('org_id')} does not own it"
+        )
+        raise HTTPException(status_code=403, detail="Upload key does not belong to caller")
+    logger.warning(
+        f"Upload key ownership mismatch for key {key!r}: caller user_id={current_user.get('user_id')} "
+        f"org_id={current_user.get('org_id')}; allowing anyway because VOLUME_UPLOAD_ENFORCE_OWNERSHIP is off"
+    )
+
 class AddModelRequest(BaseModel):
     source: Literal["huggingface", "civitai", "link"]
     folderPath: str
@@ -1526,6 +1546,7 @@ async def generate_part_upload_url_route(
     body: GeneratePartUploadUrlRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    check_upload_key_owner(request, body.key)
     upload_url = await generate_part_upload_url(request, db, body.key, body.uploadId, body.partNumber)
     return {"uploadUrl": upload_url}
 
@@ -1535,6 +1556,7 @@ async def complete_multipart_upload_route(
     body: CompleteMultipartUploadRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    check_upload_key_owner(request, body.key)
     await complete_multipart_upload(
         request,
         db,
@@ -1550,6 +1572,7 @@ async def abort_multipart_upload_route(
     body: AbortMultipartUploadRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    check_upload_key_owner(request, body.key)
     await abort_multipart_upload(request, db, body.key, body.uploadId)
     return {"status": "aborted"}
 
@@ -1620,6 +1643,7 @@ async def add_model(
             url = body.downloadLink
             
             if body.isTemporaryUpload and body.s3ObjectKey:
+                check_upload_key_owner(request, body.s3ObjectKey)
                 s3_config = await get_s3_config(request, db)
                 
                 bucket = s3_config.bucket

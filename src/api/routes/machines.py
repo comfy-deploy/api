@@ -2918,12 +2918,55 @@ class ErrorLogEntry(BaseModel):
     message: str
     
 
+def owned_by_caller(user_id, org_id, request: Request) -> bool:
+    """Python mirror of utils.get_org_or_user_condition for a row's (user_id, org_id)."""
+    current_user = request.state.current_user
+    caller_org_id = current_user.get("org_id")
+    if caller_org_id:
+        return org_id == caller_org_id
+    caller_user_id = current_user.get("user_id")
+    return caller_user_id is not None and user_id == caller_user_id and org_id is None
+
+
+async def _machine_version_owner(version_id: UUID):
+    """(user_id, org_id) of the machine that owns this version, or None. PK lookups only.
+
+    A failed lookup returns None: GET then returns no logs, POST stores them as before.
+    """
+    try:
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Machine.user_id, Machine.org_id)
+                .join(MachineVersion, MachineVersion.machine_id == Machine.id)
+                .where(MachineVersion.id == version_id)
+            )
+            return result.first()
+    except Exception as e:
+        logger.warning(f"Machine version owner lookup failed for {version_id}: {e}")
+        return None
+
+
 @router.post("/machine-version/{version_id}/error-start-logs")
 async def add_error_logs(
     request: Request,
     version_id: UUID,
     error_start_logs: List[ErrorLogEntry]
 ):
+    owner = await _machine_version_owner(version_id)
+    if owner is not None and not owned_by_caller(*owner, request):
+        current_user = request.state.current_user
+        if os.getenv("ERROR_LOGS_ENFORCE_OWNERSHIP", "false").lower() == "true":
+            logger.warning(
+                f"Rejected error-start-logs for machine version {version_id}: caller "
+                f"user_id={current_user.get('user_id')} org_id={current_user.get('org_id')} does not own it"
+            )
+            raise HTTPException(status_code=404, detail="Machine version not found")
+        logger.warning(
+            f"Error-start-logs ownership mismatch for machine version {version_id}: caller "
+            f"user_id={current_user.get('user_id')} org_id={current_user.get('org_id')}; "
+            "storing anyway because ERROR_LOGS_ENFORCE_OWNERSHIP is off"
+        )
+
     try:
         # Convert logs to format expected by Redis
         log_entries = []
@@ -2957,6 +3000,11 @@ async def get_error_logs(
         
         # Handle null or empty logs
         if logs is None:
+            return JSONResponse(content={"logs": []})
+
+        # Only the machine's owner may read its build logs; others get the same empty response
+        owner = await _machine_version_owner(UUID(version_id))
+        if owner is None or not owned_by_caller(*owner, request):
             return JSONResponse(content={"logs": []})
 
         # Handle bytes/bytearray conversion

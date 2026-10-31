@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import uuid
+from api.routes.machines import owned_by_caller
 from api.routes.run import redeploy_comfy_deploy_runner_if_exists
 from api.utils.inputs import get_inputs_from_workflow_api
 from api.utils.outputs import get_outputs_from_workflow
@@ -302,6 +304,38 @@ async def update_deployment_with_machine(
     return deployment
 
 
+def _owned_or_shadow(user_id, org_id, request: Request, what: str, obj_id) -> bool:
+    """Tenant check for an id the client sends on deployment create/update.
+
+    Returns False only when the caller doesn't own it AND DEPLOYMENT_ENFORCE_OWNERSHIP
+    is on; otherwise a mismatch is only logged.
+    """
+    if owned_by_caller(user_id, org_id, request):
+        return True
+    current_user = request.state.current_user
+    enforce = os.getenv("DEPLOYMENT_ENFORCE_OWNERSHIP", "false").lower() == "true"
+    logger.warning(
+        f"Deployment {what} ownership mismatch for {what} {obj_id}: caller "
+        f"user_id={current_user.get('user_id')} org_id={current_user.get('org_id')}; "
+        + ("rejecting" if enforce else "allowing because DEPLOYMENT_ENFORCE_OWNERSHIP is off")
+    )
+    return not enforce
+
+
+async def _check_workflow_version_owned(db: AsyncSession, workflow_version_id, request: Request):
+    owner = (
+        await db.execute(
+            select(Workflow.user_id, Workflow.org_id)
+            .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
+            .where(WorkflowVersion.id == workflow_version_id)
+        )
+    ).first()
+    if owner is not None and not _owned_or_shadow(
+        *owner, request, "workflow_version", workflow_version_id
+    ):
+        raise HTTPException(status_code=404, detail="Workflow version not found")
+
+
 @router.post(
     "/deployment",
     response_model=DeploymentModel,
@@ -366,8 +400,14 @@ async def create_deployment(
         machine_query = select(Machine).where(Machine.id == machine_id)
         result = await db.execute(machine_query)
         machine = result.scalar_one_or_none()
-        if not machine:
+        if not machine or not _owned_or_shadow(
+            machine.user_id, machine.org_id, request, "machine", machine.id
+        ):
             raise HTTPException(status_code=404, detail="Machine not found")
+
+        await _check_workflow_version_owned(
+            db, deployment_data.workflow_version_id, request
+        )
 
         if machine.machine_version_id and machine_version is None:
             machine_version_query = select(MachineVersion).where(
@@ -393,7 +433,13 @@ async def create_deployment(
             select(Workflow).where(Workflow.id == workflow_id_for_lookup)
         )
         workflow_obj = workflow_result.scalar_one_or_none()
-        if not workflow_obj:
+        # An existing deployment's workflow came from our own org-checked row, not the client
+        if not workflow_obj or (
+            existing_deployment is None
+            and not _owned_or_shadow(
+                workflow_obj.user_id, workflow_obj.org_id, request, "workflow", workflow_obj.id
+            )
+        ):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
         # Always use workflow description to override deployment description
@@ -537,7 +583,16 @@ async def update_deployment(
             machine_query = select(Machine).where(Machine.id == machine_id)
             result = await db.execute(machine_query)
             machine = result.scalar_one_or_none()
-            if not machine:
+            client_sent_machine = (
+                deployment_data.machine_id is not None
+                or deployment_data.machine_version_id is not None
+            )
+            if not machine or (
+                client_sent_machine
+                and not _owned_or_shadow(
+                    machine.user_id, machine.org_id, request, "machine", machine.id
+                )
+            ):
                 raise HTTPException(status_code=404, detail="Machine not found")
 
             if machine.machine_version_id and machine_version is None:
@@ -549,6 +604,9 @@ async def update_deployment(
 
         # Update workflow version if provided
         if deployment_data.workflow_version_id:
+            await _check_workflow_version_owned(
+                db, deployment_data.workflow_version_id, request
+            )
             deployment.workflow_version_id = deployment_data.workflow_version_id
 
         # Handle environment update if provided

@@ -5,9 +5,11 @@ import re
 from typing import Dict, Optional, Any
 import hashlib
 import asyncio
+import uuid
 import logfire
+from sqlalchemy import select
 
-from api.models import UserSettings
+from api.models import Asset, OutputShare, UserSettings, WorkflowRun
 from api.utils.multi_level_cache import multi_level_cached
 from api.utils.retrieve_s3_config_helper import retrieve_s3_config, S3Config
 # from src.modal_apps.image_optimizer import optimize_image
@@ -15,6 +17,7 @@ from .utils import (
     get_user_settings, 
     generate_presigned_url,
     generate_presigned_download_url,
+    get_org_or_user_condition,
     get_user_settings_cached_as_object
 )
 from api.database import get_db
@@ -84,6 +87,10 @@ async def optimize_image_on_demand(
                 status_code=401,
                 detail="Authentication required for private or custom bucket images"
             )
+
+        # The default bucket is shared by every tenant: a private object is only for its owner.
+        if not is_public and is_authenticated and not s3_config.is_custom:
+            await check_private_object_access(request, db, s3_key)
         
         if existence_check:
             return await get_optimized_image_response(s3_config, optimized_key, user_settings, cache)
@@ -128,8 +135,66 @@ async def optimize_image_on_demand(
                 status_code=401,
                 detail="Authentication required for private or custom bucket images"
             )
+
+        if not is_public and is_authenticated and not s3_config.is_custom:
+            await check_private_object_access(request, db, s3_key)
         
         return await get_fallback_response(s3_config, s3_key, user_settings, cache)
+
+
+async def private_object_access_problem(request: Request, db: AsyncSession, s3_key: str) -> Optional[str]:
+    """Why the caller may not read this private default-bucket object, or None if they may."""
+    parts = s3_key.split("/")
+    if "." in parts or ".." in parts:
+        return "path traversal"
+
+    # Run outputs: outputs/runs/<run_id>/<file> (internal /file-upload)
+    if len(parts) >= 4 and parts[:2] == ["outputs", "runs"]:
+        try:
+            run_id = uuid.UUID(parts[2])
+        except ValueError:
+            return "invalid run id"
+        if await db.scalar(
+            select(WorkflowRun.id).where(WorkflowRun.id == run_id, get_org_or_user_condition(WorkflowRun, request))
+        ):
+            return None
+        # Outputs shared by their owner via a public or link share stay viewable by anyone signed in.
+        if await db.scalar(
+            select(OutputShare.id).where(OutputShare.run_id == run_id, OutputShare.visibility.in_(["public", "link"])).limit(1)
+        ):
+            return None
+        return "run belongs to another tenant"
+
+    # Assets: assets/<parent>/<asset_id><ext> (files.py upload / presigned-url)
+    if len(parts) >= 2 and parts[0] == "assets":
+        asset_id = os.path.splitext(parts[-1])[0]
+        if await db.scalar(
+            select(Asset.id).where(Asset.id == asset_id, get_org_or_user_condition(Asset, request))
+        ):
+            return None
+        return "asset belongs to another tenant"
+
+    return "owner cannot be determined from key"
+
+
+async def check_private_object_access(request: Request, db: AsyncSession, s3_key: str):
+    """Shadow mode logs only; OPTIMIZE_ENFORCE_ACCESS=true refuses with 403."""
+    enforce = os.getenv("OPTIMIZE_ENFORCE_ACCESS", "false").lower() == "true"
+    try:
+        problem = await private_object_access_problem(request, db, s3_key)
+    except Exception as e:
+        problem = f"ownership lookup failed: {e}"
+    if problem:
+        current_user = request.state.current_user
+        logfire.warn("Optimize: private object requested by non-owner", extra={
+            "s3_key": s3_key,
+            "reason": problem,
+            "user_id": current_user.get("user_id"),
+            "org_id": current_user.get("org_id"),
+            "enforce": enforce,
+        })
+        if enforce:
+            raise HTTPException(status_code=403, detail="Access denied")
 
 
 def parse_transformations(transformations: str) -> Dict[str, Any]:
