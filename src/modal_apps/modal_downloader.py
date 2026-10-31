@@ -16,10 +16,11 @@ from urllib.parse import urlparse
 
 modal_downloader_app = App("volume-operations")
 
+# Pinned 2026-10-31 to the versions in the image built and tested by that day's redeploy (all three exist on PyPI).
 image = Image.debian_slim().pip_install(
-    "huggingface_hub>=0.19.4",
-    "tqdm>=4.66.1",
-    "aiohttp>=3.8.6",
+    "huggingface_hub==2.4.0",
+    "tqdm==4.70.1",
+    "aiohttp==3.14.5",
 )
 
 def host_matches(url: str, domain: str) -> bool:
