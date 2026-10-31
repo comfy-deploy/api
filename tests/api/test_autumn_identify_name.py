@@ -37,9 +37,9 @@ def _user(first, last, emails):
 @pytest.mark.parametrize(
     "first,last,emails,expected",
     [
-        ("Josiah", "Eakle", ["j@x.com"], {"email": "j@x.com", "name": "Josiah Eakle"}),
-        ("Josiah", None, ["j@x.com"], {"email": "j@x.com", "name": "Josiah"}),
-        (None, None, ["j@x.com"], {"email": "j@x.com", "name": "j@x.com"}),
+        ("Ada", "Lovelace", ["ada@example.com"], {"email": "ada@example.com", "name": "Ada Lovelace"}),
+        ("Ada", None, ["ada@example.com"], {"email": "ada@example.com", "name": "Ada"}),
+        (None, None, ["ada@example.com"], {"email": "ada@example.com", "name": "ada@example.com"}),
         (None, None, [], {"email": None, "name": "user_1"}),
     ],
 )
