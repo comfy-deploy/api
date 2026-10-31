@@ -254,7 +254,8 @@ async def generate_all_docker_commands(data: DepsBody, include_comfyuimanager: b
     docker_commands = [
         ["RUN python --version", "RUN apt-get update && apt-get install -y git wget curl unzip build-essential pkg-config libcairo2-dev"],
         ["RUN apt-get install -y libgl1 libglx-mesa0 libglib2.0-0"],
-        ["RUN python -m pip install aioboto3"],
+        # requests is imported by the v4 runner (my_app.py); transformers 5 / huggingface_hub 1+ no longer pull it in
+        ["RUN python -m pip install aioboto3 requests"],
         ["RUN pip freeze"],
         [
             f"RUN git clone {comfy_ui_override.data.files[0] if comfy_ui_override else 'https://github.com/comfyanonymous/ComfyUI.git'} /comfyui",
