@@ -1448,8 +1448,6 @@ async def _create_run(
                     result = await db.execute(first_output_query)
                     output = result.scalar_one_or_none()
 
-                    user_settings = await get_user_settings(request, db)
-
                     await post_process_outputs([output], user_settings)
 
                     if data.execution_mode == "sync_first_result":
@@ -1491,14 +1489,12 @@ async def _create_run(
                     result = await db.execute(output_query)
                     outputs = result.scalars().all()
 
-                    user_settings = await get_user_settings(request, db)
                     clean_up_outputs(outputs)
                     await post_process_outputs(outputs, user_settings)
 
                     return [output.to_dict() for output in outputs]
             elif data.execution_mode == "stream":
                 ComfyDeployRunner = await get_comfy_deploy_runner(machine_id, gpu, deployment, machine.optimized_runner if machine else False)
-                user_settings = await get_user_settings(request, db)
 
                 async def wrapped_generator():
                     yield f"event: event_update\ndata: {json.dumps({'event': 'queuing'})}\n\n"
