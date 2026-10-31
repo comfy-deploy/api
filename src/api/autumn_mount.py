@@ -29,7 +29,10 @@ async def get_customer_clerk_name_cached(customer_id: str) -> EmailAndName:
             return EmailAndName(email=None, name=org.name)
         else:
             user = await clerk.users.get_async(user_id=customer_id)
-            return EmailAndName(email=user.email_addresses[0].email_address, name=user.first_name + " " + user.last_name)
+            # first/last name and email are all optional in Clerk; a crash here 500s /api/autumn
+            email = user.email_addresses[0].email_address if user.email_addresses else None
+            name = " ".join(filter(None, [user.first_name, user.last_name])) or email or customer_id
+            return EmailAndName(email=email, name=name)
 
 
 async def identify(request: "StarletteRequest") -> "AutumnIdentifyData":
