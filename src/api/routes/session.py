@@ -7,6 +7,7 @@ from pprint import pprint
 from .internal import ensure_redis_stream_expires, insert_log_entry_to_redis, clear_redis_log, publish_progress_update
 from api.routes.machines import (
     GitCommitHash,
+    owned_by_caller,
     redeploy_machine,
 )
 from api.utils.docker import (
@@ -27,6 +28,7 @@ import logfire
 import modal
 from sqlalchemy.ext.asyncio import AsyncSession
 from upstash_redis.asyncio import Redis
+from cachetools import TTLCache
 from .utils import select, get_org_or_user_condition
 from pydantic import BaseModel, Field
 
@@ -1239,6 +1241,30 @@ class UpdateSessionLogBody(BaseModel):
     log: str
 
 
+# session_id -> (user_id, org_id) of its GPUEvent; a session's owner never changes
+_session_owner_cache: TTLCache = TTLCache(maxsize=10000, ttl=600)
+
+
+async def _get_session_owner(session_id: str):
+    owner = _session_owner_cache.get(session_id)
+    if owner is None:
+        try:
+            async with get_db_context() as db:
+                row = (
+                    await db.execute(
+                        select(GPUEvent.user_id, GPUEvent.org_id)
+                        .where(GPUEvent.session_id == session_id)
+                        .limit(1)
+                    )
+                ).first()
+        except Exception as e:  # never let the ownership lookup drop a log line
+            logger.warning(f"Session owner lookup failed for {session_id}: {e}")
+            return None
+        if row is not None:  # unknown sessions aren't cached so a later GPUEvent is picked up
+            owner = _session_owner_cache[session_id] = (row[0], row[1])
+    return owner
+
+
 @beta_router.post(
     "/session/callback/log",
 )
@@ -1246,6 +1272,20 @@ async def update_session_log(
     request: Request,
     body: UpdateSessionLogBody,
 ) -> Dict[str, Any]:
+    owner = await _get_session_owner(body.session_id)
+    if owner is not None and not owned_by_caller(*owner, request):
+        current_user = request.state.current_user
+        if os.getenv("SESSION_LOG_ENFORCE_OWNERSHIP", "false").lower() == "true":
+            logger.warning(
+                f"Rejected session log for session {body.session_id}: caller "
+                f"user_id={current_user.get('user_id')} org_id={current_user.get('org_id')} does not own it"
+            )
+            raise HTTPException(status_code=404, detail="Session not found")
+        logger.warning(
+            f"Session log ownership mismatch for session {body.session_id}: caller "
+            f"user_id={current_user.get('user_id')} org_id={current_user.get('org_id')}; "
+            "logging anyway because SESSION_LOG_ENFORCE_OWNERSHIP is off"
+        )
     send_log_entry(body.session_id, body.machine_id, body.log)
     return {"success": True}
 

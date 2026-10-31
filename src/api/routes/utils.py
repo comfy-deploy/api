@@ -668,6 +668,15 @@ def get_temporary_download_url(
     # Parse the URL
     parsed_url = urlparse(url)
 
+    # The bucket is taken from the first host label, so a URL such as
+    # https://<platform-bucket>.attacker.tld/<key> would be presigned against our bucket
+    # with the caller's credentials. Only real S3 hosts may be presigned.
+    host = parsed_url.hostname or ""
+    if not host.endswith(".amazonaws.com"):
+        if os.getenv("S3_URL_ENFORCE_HOST", "false").lower() == "true":
+            raise ValueError("Refusing to presign a non-S3 URL")
+        logging.warning(f"Presigning URL with non-S3 host {host!r}; S3_URL_ENFORCE_HOST is off")
+
     # Extract bucket name and object key
     bucket = parsed_url.netloc.split(".")[0]
     object_key = unquote(parsed_url.path.lstrip("/"))
@@ -957,19 +966,35 @@ async def send_workflow_update(workflow_id: str, data: dict):
 
 
 async def fetch_with_timeout(url, options, timeout=20):
+    from api.utils import ssrf
+
+    # SSRF guard: in shadow mode (default) this only logs and the request below is
+    # unchanged; with SSRF_GUARD_ENFORCE=true the URL and every redirect hop are checked.
+    enforce = ssrf.enforcing()
+    if reason := await ssrf.guard(url, "run_webhook"):
+        raise ssrf.SSRFBlockedError(reason)
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(
+            trace_configs=[ssrf.redirect_trace_config("run_webhook")] if enforce else None
+        ) as session:
             # logging.info(options)
-            method = options.pop("method", "GET")  # Extract method from options
+            # Don't pop from the caller's dict: retry_fetch reuses it, and popping
+            # turned every retry after the first into a GET
+            options = dict(options)
+            method = options.pop("method", "GET")
             async with session.request(
                 method, url, **options, timeout=timeout
             ) as response:
+                if not enforce and response.history:
+                    await ssrf.log_redirect_hops(response, "run_webhook")
                 return response
     except asyncio.TimeoutError:
         raise TimeoutError("Request timed out")
 
 
 async def retry_fetch(url, options, num_retries=3):
+    from api.utils.ssrf import SSRFBlockedError
+
     for i in range(num_retries):
         try:
             response = await fetch_with_timeout(url, options)
@@ -980,6 +1005,8 @@ async def retry_fetch(url, options, num_retries=3):
                 await asyncio.sleep(base_delay + jitter)
                 continue
             return response
+        except SSRFBlockedError:
+            raise  # a refused URL won't become allowed by retrying
         except Exception as error:
             if i == num_retries - 1:
                 raise error

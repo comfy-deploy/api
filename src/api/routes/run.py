@@ -76,6 +76,7 @@ import httpx
 import base64
 from api.utils.retrieve_s3_config_helper import retrieve_s3_config
 from api.utils.autumn import autumn_client
+from api.utils import ssrf
 from api.routes.platform import get_customer_plan_cached
 
 logger = logging.getLogger(__name__)
@@ -1323,6 +1324,11 @@ async def _create_run(
                                 status_code=400, detail="Machine auth token not found"
                             )
 
+                        if await ssrf.guard(f"{machine.endpoint}/run", "machine_endpoint"):
+                            raise HTTPException(
+                                status_code=400, detail="Machine endpoint is not allowed"
+                            )
+
                         async with httpx.AsyncClient() as _client:
                             try:
                                 # The new default is to use the v2 endpoint
@@ -1353,9 +1359,21 @@ async def _create_run(
                                 )
 
                             except httpx.HTTPStatusError as e:
+                                # Echoing the upstream body turns a bad endpoint into a
+                                # full-read SSRF; enforce mode returns status only.
+                                if ssrf.enforcing():
+                                    detail = f"Error creating run: {e.response.status_code} {e.response.reason_phrase}"
+                                else:
+                                    logger.warning(
+                                        "SSRF guard would stop echoing upstream body: host=%r status=%s bytes=%d",
+                                        e.request.url.host,
+                                        e.response.status_code,
+                                        len(e.response.content),
+                                    )
+                                    detail = f"Error creating run: {e.response.text}"
                                 raise HTTPException(
                                     status_code=e.response.status_code,
-                                    detail=f"Error creating run: {e.response.text}",
+                                    detail=detail,
                                 )
 
                         # Update the run with the RunPod job ID if available
@@ -1376,6 +1394,11 @@ async def _create_run(
                             headers["authorizationheader"] = machine.auth_token
 
                         # print(headers)
+
+                        if await ssrf.guard(comfyui_endpoint, "machine_endpoint"):
+                            raise HTTPException(
+                                status_code=400, detail="Machine endpoint is not allowed"
+                            )
 
                         async with httpx.AsyncClient() as _client:
                             response = None  # Define response outside try block
@@ -1435,6 +1458,10 @@ async def _create_run(
                             for image in images:
                                 if isinstance(image, dict):
                                     if "url" in image:
+                                        # URLs are written by the user's container; httpx doesn't
+                                        # follow redirects here, so checking this URL is enough.
+                                        if await ssrf.guard(image["url"], "sync_first_result"):
+                                            continue
                                         # Fetch the image/video data
                                         async with httpx.AsyncClient() as _client:
                                             response = await _client.get(image["url"])
