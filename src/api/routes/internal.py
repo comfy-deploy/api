@@ -365,15 +365,21 @@ def _as_utc(value):
 
 def billable_end(event):
     """End time to store and bill: never before start, and for a session never past
-    start + session_timeout + grace (containers can report a late end)."""
-    start, end = _as_utc(event.start_time), _as_utc(event.end_time)
-    if start is None or end is None:
+    start + session_timeout + grace (containers can report a late end).
+
+    Returns event.end_time itself when nothing changes, and otherwise keeps its
+    naive/aware style: the DB hands these back naive, and the Autumn charge
+    subtracts start from end, so mixing styles there raises and drops the charge."""
+    end = event.end_time
+    if event.start_time is None or end is None:
         return end
-    if end < start:
-        return start
+    start_utc, end_utc = _as_utc(event.start_time), _as_utc(end)
+    billed = max(end_utc, start_utc)
     if getattr(event, "session_id", None) and getattr(event, "session_timeout", None):
-        return min(end, start + timedelta(minutes=event.session_timeout) + SESSION_BILLING_GRACE)
-    return end
+        billed = min(billed, start_utc + timedelta(minutes=event.session_timeout) + SESSION_BILLING_GRACE)
+    if billed == end_utc:
+        return end
+    return billed if end.tzinfo else billed.replace(tzinfo=None)
 
 
 _cross_tenant_warned: TTLCache = TTLCache(maxsize=5000, ttl=600)
