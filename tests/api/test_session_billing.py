@@ -169,3 +169,28 @@ def test_gpu_end_before_start_bills_zero_not_negative(monkeypatch):
     event = _end_event(None, start, None, reported)
     charge = _gpu_end(monkeypatch, event, reported)
     assert charge.await_args.kwargs["end_time"] == start
+
+
+# ------------------------------------------------- real DB shape: naive UTC datetimes
+# Staging showed the DB returns these naive; turning one aware made the Autumn charge
+# do naive - aware, raise, and drop the charge.
+
+
+def test_naive_db_times_capped_end_stays_naive(monkeypatch):
+    start = datetime.utcnow() - timedelta(hours=24)
+    reported = datetime.utcnow()
+    event = _end_event("sess_1", start, 15, reported)
+    charge = _gpu_end(monkeypatch, event, reported)
+    billed_end = charge.await_args.kwargs["end_time"]
+    assert billed_end.tzinfo is None
+    assert billed_end == start + timedelta(minutes=15) + internal.SESSION_BILLING_GRACE
+    assert billed_end - charge.await_args.kwargs["start_time"] > timedelta(0)  # must not raise
+
+
+def test_naive_db_times_unchanged_end_is_left_alone(monkeypatch):
+    start = datetime.utcnow() - timedelta(minutes=5)
+    reported = datetime.utcnow()
+    event = _end_event("sess_1", start, 15, reported)
+    db_updates_before = event.end_time
+    charge = _gpu_end(monkeypatch, event, reported)
+    assert charge.await_args.kwargs["end_time"] is db_updates_before
