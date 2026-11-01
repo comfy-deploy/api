@@ -1,6 +1,6 @@
 import asyncio
 import contextlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import inspect
 import os
 from pprint import pprint
@@ -678,6 +678,11 @@ async def increase_timeout_2(
     # Update the timeout end time in Redis
     if redis is not None:
         await redis.set(f"session:{session_id}:timeout_end", new_timeout_end.isoformat())
+
+    # Persist the extension too: the DB fallback in check_and_close_sessions and the
+    # gpu_end billing cap both read session_timeout (v1 increase-timeout already does this).
+    gpu_event.session_timeout = (gpu_event.session_timeout or 0) + body.minutes
+    await db.commit()
 
     return JSONResponse(
         status_code=200, content={"message": "Timeout increased successfully"}
@@ -1844,6 +1849,26 @@ async def delete_session(
     return {"success": True}
 
 
+async def _db_session_deadline(session_id: str) -> Optional[datetime]:
+    """Naive-UTC deadline (start or created + session_timeout) for an open session, or None."""
+    async with get_db_context() as db:
+        event = (
+            await db.execute(
+                select(GPUEvent)
+                .where(GPUEvent.session_id == str(session_id))
+                .where(GPUEvent.end_time.is_(None))
+            )
+        ).scalar_one_or_none()
+    if event is None or not event.session_timeout:
+        return None
+    started = event.start_time or event.created_at
+    if started is None:
+        return None
+    if started.tzinfo is not None:
+        started = started.astimezone(timezone.utc).replace(tzinfo=None)
+    return started + timedelta(minutes=event.session_timeout)
+
+
 async def check_and_close_sessions(request: Request, session_id: str):
     try:
         # while True:
@@ -1852,21 +1877,20 @@ async def check_and_close_sessions(request: Request, session_id: str):
         logger.info(f"Checking session {session_id}")
 
         # Retrieve the timeout end time from Redis
-        if redis is None:
-            logger.info(f"Redis not configured; skipping timeout check for session {session_id}")
-            return
-        timeout_end_str = await redis.get(key)
+        timeout_end_str = await redis.get(key) if redis is not None else None
         if timeout_end_str is None:
-            logger.info(f"No timeout end found for session {session_id}")
-            return
-            # break
-
-        try:
-            timeout_end = datetime.fromisoformat(timeout_end_str)
-        except ValueError:
-            logger.error(f"Invalid date format for session {session_id}")
-            return
-            # break
+            # Without a deadline the session used to run until Modal's own max (~24h),
+            # billed the whole time. Fall back to the DB: start + session_timeout.
+            timeout_end = await _db_session_deadline(session_id)
+            if timeout_end is None:
+                logger.info(f"No timeout end found for session {session_id}")
+                return
+        else:
+            try:
+                timeout_end = datetime.fromisoformat(timeout_end_str)
+            except ValueError:
+                logger.error(f"Invalid date format for session {session_id}")
+                return
 
         if datetime.utcnow() > timeout_end:
             # Close the session

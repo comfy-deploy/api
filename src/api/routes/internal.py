@@ -54,7 +54,7 @@ from api.models import (
 )
 
 from fastapi import Query
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import datetime as dt
 
 from fastapi import Depends
@@ -352,6 +352,34 @@ async def publish_progress_update(
 
 
 endStatuses = ["success", "failed", "timeout", "cancelled"]
+
+
+# Session containers can take a little while to shut down after their deadline.
+SESSION_BILLING_GRACE = timedelta(minutes=5)
+
+
+def _as_utc(value):
+    # A naive vs aware comparison raises, which would turn into a lost charge.
+    return value if value is None or value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def billable_end(event):
+    """End time to store and bill: never before start, and for a session never past
+    start + session_timeout + grace (containers can report a late end).
+
+    Returns event.end_time itself when nothing changes, and otherwise keeps its
+    naive/aware style: the DB hands these back naive, and the Autumn charge
+    subtracts start from end, so mixing styles there raises and drops the charge."""
+    end = event.end_time
+    if event.start_time is None or end is None:
+        return end
+    start_utc, end_utc = _as_utc(event.start_time), _as_utc(end)
+    billed = max(end_utc, start_utc)
+    if getattr(event, "session_id", None) and getattr(event, "session_timeout", None):
+        billed = min(billed, start_utc + timedelta(minutes=event.session_timeout) + SESSION_BILLING_GRACE)
+    if billed == end_utc:
+        return end
+    return billed if end.tzinfo else billed.replace(tzinfo=None)
 
 
 _cross_tenant_warned: TTLCache = TTLCache(maxsize=5000, ttl=600)
@@ -1032,6 +1060,15 @@ async def create_gpu_event(
             ):
                 await db.rollback()
                 return _forbidden()
+            end_time = billable_end(event)
+            if end_time != event.end_time:
+                logger.warning(
+                    f"gpu_end {event.id}: billed end adjusted from {event.end_time} to {end_time}"
+                )
+                await db.execute(
+                    update(GPUEvent).where(GPUEvent.id == event.id).values(end_time=end_time)
+                )
+                event.end_time = end_time
             await db.commit()
             
             # Track GPU concurrency change (-1 for gpu_end)
