@@ -1237,7 +1237,7 @@ def r(price: float) -> float:
     return round(price * 1.1, 6)
 
 
-# GPU pricing per second with 10% margin (H200/B200 use 50% margin)
+# GPU pricing per second with 10% margin (H200/B200/RTX-PRO-6000 use 50% margin)
 PRICING_LOOKUP_TABLE = {
     "T4": r(0.000164),
     "L4": r(0.000291),
@@ -1248,6 +1248,7 @@ PRICING_LOOKUP_TABLE = {
     "H100": r(0.002125),
     "H200": round(0.001261 * 1.5, 6),  # 50% markup
     "B200": round(0.001736 * 1.5, 6),  # 50% markup
+    "RTX-PRO-6000": round(0.000842 * 1.5, 6),  # 50% markup
     "CPU": r(0.000038),
 }
 

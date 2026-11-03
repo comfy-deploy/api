@@ -19,6 +19,12 @@ export const gpuB200 = feature({
 	type: "single_use",
 });
 
+export const gpuRtxPro6000 = feature({
+	id: "gpu-rtx-pro-6000",
+	name: "gpu-rtx-pro-6000",
+	type: "single_use",
+});
+
 export const h100DiscountCredits = feature({
 	id: "h100-discount-credits",
 	name: "H100 discount credits",
@@ -63,6 +69,10 @@ export const h100DiscountCredits = feature({
 		{
 			metered_feature_id: "gpu-b200",
 			credit_cost: 0.2604,
+		},
+		{
+			metered_feature_id: "gpu-rtx-pro-6000",
+			credit_cost: 0.1263,
 		},
 	],
 });
@@ -178,6 +188,10 @@ export const gpuCredit = feature({
 			metered_feature_id: "gpu-b200",
 			credit_cost: 0.2604,
 		},
+		{
+			metered_feature_id: "gpu-rtx-pro-6000",
+			credit_cost: 0.1263,
+		},
 	],
 });
 
@@ -225,6 +239,10 @@ export const gpuCreditTopUp = feature({
 		{
 			metered_feature_id: "gpu-b200",
 			credit_cost: 0.2604,
+		},
+		{
+			metered_feature_id: "gpu-rtx-pro-6000",
+			credit_cost: 0.1263,
 		},
 	],
 });
