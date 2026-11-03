@@ -5,9 +5,29 @@ on:
     branches:
       - main
       - dev
+  pull_request:
 
 jobs:
+  # Fast feedback (~1 min): every test marked `unit`, no Docker / DB / Modal / ngrok.
+  # Runs on PRs too. The end-to-end job below still runs on main/dev pushes.
+  unit-test:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      DATABASE_URL: postgresql+asyncpg://unit:unit@localhost:5432/unit  # import-time only, never connected
+      CURRENT_API_URL: http://localhost:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --dev --frozen --no-install-project
+      - name: Unit tests
+        run: PYTHONPATH=src uv run --no-sync pytest -m unit -p no:cacheprovider
+
   integration-test:
+    # Needs Modal, S3 and ngrok secrets (one ngrok session at a time), so not on PRs.
+    if: github.event_name != 'pull_request'
     runs-on: blacksmith-32vcpu-ubuntu-2404
     env:
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
@@ -43,10 +63,10 @@ jobs:
         run: docker compose -f docker-compose.test.yml down -v
 
   migrate:
-    needs: integration-test
+    needs: [unit-test, integration-test]
     runs-on: blacksmith-32vcpu-ubuntu-2404
     # drop the "contains" portion, since we already filter at top-level
-    if: github.ref_name == 'main' || github.ref_name == 'dev'
+    if: github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'dev')
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'dev' }}
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
