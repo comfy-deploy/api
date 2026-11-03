@@ -620,6 +620,8 @@ async def update_deployment(
         deployment_dict = deployment.to_dict()
         return deployment_dict
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating deployment: {e}", exc_info=True)
         await db.rollback()
@@ -967,6 +969,8 @@ async def get_deployment(
 
         return deployment_dict
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting deployment: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
