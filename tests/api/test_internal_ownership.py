@@ -36,6 +36,7 @@ def _warnings(caplog):
 @pytest.fixture(autouse=True)
 def _fresh_warning_dedupe():
     internal._cross_tenant_warned.clear()
+    internal._machine_tenant_cache.clear()
 
 
 # ---------------------------------------------------------------- gpu_event
@@ -189,12 +190,18 @@ def test_gpu_start_session_other_tenant(monkeypatch, caplog):
 # ---------------------------------------------------------------- update-run
 
 
-def _update_run(monkeypatch, caller, run):
+def _update_run(monkeypatch, caller, run, machine_owner=None, db=None):
+    """machine_owner: (user_id, org_id) the machine lookup returns, or None (no such machine)."""
     monkeypatch.setattr(internal, "get_cached_workflow_run", AsyncMock(return_value=run))
     request = SimpleNamespace(state=SimpleNamespace(current_user=caller))
     # ws_event short-circuits right after the ownership check: no further DB access.
     body = UpdateRunBody(run_id="run_1", ws_event={"x": 1})
-    return asyncio.run(internal.update_run(request, body, BackgroundTasks(), MagicMock()))
+    if db is None:
+        result = MagicMock()
+        result.first.return_value = machine_owner
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=result)
+    return asyncio.run(internal.update_run(request, body, BackgroundTasks(), db))
 
 
 def _run(user_id, org_id):
@@ -239,3 +246,50 @@ def test_update_run_other_tenant(monkeypatch, caplog, caller, run):
         _update_run(monkeypatch, caller, run)
     assert exc.value.status_code == 403
     assert len(_warnings(caplog)) == 1
+
+
+# Shared / public-share deployments: someone else triggers the run, the machine owner's
+# token reports on it. That must keep working once UPDATE_RUN_ENFORCE_OWNERSHIP is on.
+
+
+@pytest.mark.parametrize(
+    "caller,run,owner",
+    [
+        (_caller("owner"), _run("visitor", None), ("owner", None)),
+        (_caller("owner", "org_1"), _run("visitor", None), ("someone", "org_1")),
+        (_caller("owner", "org_1"), _run("visitor", "org_2"), ("owner", "org_1")),
+    ],
+)
+def test_update_run_machine_owner_allowed_on_shared_run(monkeypatch, caplog, caller, run, owner):
+    monkeypatch.setenv(RUN_FLAG, "true")
+    assert _update_run(monkeypatch, caller, run, machine_owner=owner) == {"status": "success"}
+    assert not _warnings(caplog)
+
+
+@pytest.mark.parametrize(
+    "caller,owner",
+    [
+        (_caller("attacker"), ("owner", None)),  # not the machine owner either
+        (_caller("attacker", "org_9"), ("owner", "org_1")),
+        (_caller("owner"), ("owner", "org_1")),  # personal token, org-owned machine
+        (_caller("attacker"), None),  # machine not found
+    ],
+)
+def test_update_run_not_machine_owner_rejected(monkeypatch, caplog, caller, owner):
+    monkeypatch.setenv(RUN_FLAG, "true")
+    with pytest.raises(HTTPException) as exc:
+        _update_run(monkeypatch, caller, _run("visitor", None), machine_owner=owner)
+    assert exc.value.status_code == 403
+
+
+def test_update_run_machine_lookup_only_on_mismatch_and_cached(monkeypatch):
+    monkeypatch.setenv(RUN_FLAG, "true")
+    result = MagicMock()
+    result.first.return_value = ("owner", None)
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+    _update_run(monkeypatch, _caller("visitor"), _run("visitor", None), db=db)  # same tenant
+    assert db.execute.await_count == 0
+    for _ in range(3):  # shared run, update-run fires per log line
+        _update_run(monkeypatch, _caller("owner"), _run("visitor", None), db=db)
+    assert db.execute.await_count == 1
