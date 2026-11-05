@@ -2845,7 +2845,6 @@ async def import_machine(
             logger.error(f"Failed to update machine usage in autumn: {str(e)}")
         
         if new_machine.type == "comfy-deploy-serverless" and machine_version:
-            current_endpoint = str(request.base_url).rstrip("/")
             volumes = await retrieve_model_volumes(request, db)
             # Build DepsBody for docker command generation
             deps_body = DepsBody(
