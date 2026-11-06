@@ -1,1 +1,1 @@
-ALTER TYPE "public"."machine_gpu" ADD VALUE 'RTX-PRO-6000';
+ALTER TYPE "public"."machine_gpu" ADD VALUE IF NOT EXISTS 'RTX-PRO-6000';
