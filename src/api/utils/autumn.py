@@ -298,6 +298,7 @@ class AutumnClient:
         if feature_ids is None:
             feature_ids = [
                 "gpu-b200",
+                "gpu-rtx-pro-6000",
                 "gpu-h200",
                 "cpu",
                 "gpu-h100",

@@ -1248,6 +1248,7 @@ PRICING_LOOKUP_TABLE = {
     "H100": r(0.002125),
     "H200": round(0.001261 * 1.5, 6),  # 50% markup
     "B200": round(0.001736 * 1.5, 6),  # 50% markup
+    "RTX-PRO-6000": round(0.000842 * 1.3, 6),  # 30% markup, $3.94/hr
     "CPU": r(0.000038),
 }
 

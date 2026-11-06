@@ -1,0 +1,1 @@
+ALTER TYPE "public"."machine_gpu" ADD VALUE 'RTX-PRO-6000';
