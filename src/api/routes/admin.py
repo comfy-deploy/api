@@ -2,13 +2,14 @@ import os
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
+from uuid import UUID
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
-from api.models import Deployment, WorkflowRun
+from api.models import Deployment, Machine, WorkflowRun
 from api.routes.deployments import (
     DeploymentModel,
     _deactivate_deployment_internal,
@@ -200,3 +201,56 @@ async def scan_legacy_deployments(
     except Exception as e:
         logger.error(f"Error scanning legacy deployments: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+class UpdatePluginRequest(BaseModel):
+    machine_ids: List[UUID]
+    dry_run: bool = True  # Default to dry run for safety
+
+
+@router.post("/machines/update-plugin")
+async def admin_update_machine_plugin(
+    request: Request,
+    body: UpdatePluginRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin only: bump the comfyui-deploy custom node to latest and rebuild
+    customer machines, same as the owner clicking "Update" (no impersonation)."""
+    check_admin_org(request)
+    from api.routes.machines import update_machine_custom_nodes
+
+    admin = request.state.current_user
+    results = []
+    for machine_id in body.machine_ids:
+        machine = (
+            await db.execute(
+                select(Machine).where(Machine.id == machine_id, ~Machine.deleted)
+            )
+        ).scalars().first()
+        if not machine:
+            results.append({"machine_id": str(machine_id), "status": "not_found"})
+            continue
+        if body.dry_run:
+            results.append({"machine_id": str(machine_id), "name": machine.name, "status": "would_update"})
+            continue
+
+        logger.info(
+            f"admin {admin.get('user_id')} updating comfyui-deploy on machine {machine_id} "
+            f"(org={machine.org_id} user={machine.user_id})"
+        )
+        # Act as the machine owner so the existing org-scoped update path applies.
+        owner = {"user_id": machine.user_id}
+        if machine.org_id:
+            owner["org_id"] = machine.org_id
+        request.state.current_user = owner
+        try:
+            await update_machine_custom_nodes(
+                request=request, machine_id=machine_id, db=db, background_tasks=background_tasks
+            )
+            results.append({"machine_id": str(machine_id), "name": machine.name, "status": "rebuilding"})
+        except HTTPException as e:
+            results.append({"machine_id": str(machine_id), "status": "error", "detail": e.detail})
+        finally:
+            request.state.current_user = admin
+
+    return {"results": results}
