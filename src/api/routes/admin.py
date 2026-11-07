@@ -217,6 +217,9 @@ async def admin_update_machine_plugin(
     """Admin only: bump the comfyui-deploy custom node to latest and rebuild
     customer machines, same as the owner clicking "Update" (no impersonation)."""
     check_admin_org(request)
+    # Clerk browser sessions only (they carry "sid"); API keys / machine tokens can't call this.
+    if not request.state.current_user.get("sid"):
+        raise HTTPException(status_code=403, detail="Admin login session required")
     from api.routes.machines import update_machine_custom_nodes
 
     admin = request.state.current_user

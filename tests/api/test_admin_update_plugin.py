@@ -17,8 +17,11 @@ pytestmark = pytest.mark.unit
 MACHINE = SimpleNamespace(id=uuid.uuid4(), name="m1", user_id="user_owner", org_id="org_owner")
 
 
-def _request(org_id):
-    return SimpleNamespace(state=SimpleNamespace(current_user={"user_id": "user_admin", "org_id": org_id}))
+def _request(org_id, sid="sess_1"):
+    user = {"user_id": "user_admin", "org_id": org_id}
+    if sid:
+        user["sid"] = sid
+    return SimpleNamespace(state=SimpleNamespace(current_user=user))
 
 
 def _db():
@@ -42,6 +45,13 @@ def test_non_admin_refused(monkeypatch):
     monkeypatch.setenv("ADMIN_ORG_ID", "org_admin")
     with pytest.raises(HTTPException) as e:
         _run(_request("org_someone"), dry_run=False)
+    assert e.value.status_code == 403
+
+
+def test_admin_api_key_refused(monkeypatch):
+    monkeypatch.setenv("ADMIN_ORG_ID", "org_admin")
+    with pytest.raises(HTTPException) as e:
+        _run(_request("org_admin", sid=None), dry_run=False)
     assert e.value.status_code == 403
 
 
@@ -70,4 +80,4 @@ def test_update_runs_as_owner_then_restores_admin(monkeypatch):
     out = _run(req, dry_run=False)
     assert out["results"][0]["status"] == "rebuilding"
     assert seen == [{"user_id": "user_owner", "org_id": "org_owner"}]
-    assert req.state.current_user["org_id"] == "org_admin"
+    assert req.state.current_user["org_id"] == "org_admin" and req.state.current_user["sid"] == "sess_1"
