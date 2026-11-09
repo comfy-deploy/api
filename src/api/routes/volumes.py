@@ -16,7 +16,7 @@ import modal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from huggingface_hub import repo_info
-from huggingface_hub.utils import RepositoryNotFoundError
+from huggingface_hub.utils import HFValidationError, RepositoryNotFoundError
 from modal import Volume
 from pydantic import BaseModel
 from sqlalchemy import update
@@ -1226,7 +1226,8 @@ async def validate_huggingface_repo(
             exists=True,
         )
 
-    except RepositoryNotFoundError:
+    except (RepositoryNotFoundError, HFValidationError):
+        # A malformed repo id (e.g. a full URL) can't exist; not a server error
         return HuggingFaceValidateResponse(exists=False)
     except Exception as e:
         logger.error(f"Error validating HuggingFace repo: {str(e)}")
