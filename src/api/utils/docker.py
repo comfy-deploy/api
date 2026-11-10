@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel
+from fastapi import HTTPException
+from pydantic import BaseModel, ValidationError
 from api.routes.comfy_node import get_comfyui_versions_cached
 from api.routes.comfy_node import get_latest_comfydeploy_hash
 from api.routes.comfy_node import fetch_comfy_node_metadata
@@ -192,7 +193,18 @@ async def generate_all_docker_commands(data: DepsBody, include_comfyuimanager: b
     
     if steps:
         # print("steps",steps)
-        steps = DockerSteps(**steps) if isinstance(steps, dict) else steps
+        try:
+            steps = DockerSteps(**steps) if isinstance(steps, dict) else steps
+        except ValidationError as e:
+            # Malformed client-supplied docker steps are a client error, not a 500.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid docker_command_steps: {e.error_count()} validation error(s): "
+                + "; ".join(
+                    ".".join(str(x) for x in err["loc"]) + f" ({err['msg']})"
+                    for err in e.errors()[:5]
+                ),
+            )
         comfy_ui_index = next((i for i, step in enumerate(steps.steps) if step.type == "custom-node" and step.data.name == "comfyui"), -1)
         comfy_ui_override = None
         if comfy_ui_index != -1:
