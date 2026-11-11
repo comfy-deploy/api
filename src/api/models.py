@@ -191,6 +191,7 @@ class WorkflowRun(SerializableMixin, Base):
             "H100",
             "H200",
             "B200",
+            "RTX-PRO-6000",
             name="machine_gpu",
         )
     )
@@ -394,6 +395,7 @@ class Deployment(SerializableMixin, Base):
             "H100",
             "H200",
             "B200",
+            "RTX-PRO-6000",
             name="machine_gpu",
         )
     )
@@ -425,6 +427,7 @@ def get_machine_columns():
                 "H100",
                 "H200",
                 "B200",
+                "RTX-PRO-6000",
                 name="machine_gpu",
             )
         ),
@@ -807,6 +810,7 @@ class GPUEvent(SerializableMixin, Base):
             "H100",
             "H200",
             "B200",
+            "RTX-PRO-6000",
             name="machine_gpu",
         )
     )
