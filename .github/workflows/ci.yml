@@ -28,6 +28,11 @@ jobs:
   integration-test:
     # Needs Modal, S3 and ngrok secrets (one ngrok session at a time), so not on PRs.
     if: github.event_name != 'pull_request'
+    # ngrok free plan = 3 agent sessions; queue instead of failing with ERR_NGROK_108 when
+    # several PRs merge at once. Never cancel a running job (migrate depends on it).
+    concurrency:
+      group: ngrok-integration
+      cancel-in-progress: false
     runs-on: blacksmith-32vcpu-ubuntu-2404
     env:
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
