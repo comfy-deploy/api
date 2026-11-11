@@ -59,6 +59,13 @@ def create_status_payload(
     return payload
 
 
+def ensure_parent_dir(path: str) -> None:
+    """Create the parent directory of `path`; a bare filename has no parent to create."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
 @modal_downloader_app.function(
     timeout=3600,
     secrets=[Secret.from_name("civitai-api-key")],
@@ -131,7 +138,7 @@ async def modal_download_file_task(
                     progress_state["total_size"] = int(
                         response.headers.get("Content-Length", 0)
                     )
-                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                    ensure_parent_dir(full_path)
 
                     # Start progress reporting task
                     progress_task = asyncio.create_task(report_progress())
