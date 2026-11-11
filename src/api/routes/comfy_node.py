@@ -26,6 +26,8 @@ async def extract_repo_name(repo_url: str) -> str:
     url = urlparse(cleaned_url)
     path_parts = url.path.split("/")
     path_parts = [p for p in path_parts if p]
+    if len(path_parts) < 2:
+        raise HTTPException(status_code=400, detail="Invalid git repository URL")
     repo_name = path_parts[1].replace(".git", "")
     author = path_parts[0]
     return f"{author}/{repo_name}"
