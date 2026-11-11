@@ -58,7 +58,7 @@ class AutumnClient:
                 ) as response:
                     response_text = await response.text()
                     
-                    if response.status == 200:
+                    if 200 <= response.status < 300:  # 202 = event accepted async
                         return json.loads(response_text) if response_text else {}
                     else:
                         # Try to parse error response
@@ -298,6 +298,7 @@ class AutumnClient:
         if feature_ids is None:
             feature_ids = [
                 "gpu-b200",
+                "gpu-rtx-pro-6000",
                 "gpu-h200",
                 "cpu",
                 "gpu-h100",
