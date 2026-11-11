@@ -59,6 +59,7 @@ import datetime as dt
 
 from fastapi import Depends
 from api.utils.autumn import send_autumn_usage_event, autumn_client
+from api.utils.ssrf import SSRFBlockedError
 
 from upstash_redis.asyncio import Redis
 from cachetools import TTLCache
@@ -136,7 +137,25 @@ async def send_webhook(
     options = {"method": "POST", "headers": headers, "json": payload}
 
     start_time = time.time()
-    response = await retry_fetch(url, options)
+    try:
+        response = await retry_fetch(url, options)
+    except SSRFBlockedError:
+        # The SSRF guard already logged host + reason; skip the traceback and tell
+        # the customer in their run logs why the webhook wasn't sent.
+        blocked_entry = {
+            "timestamp": start_time,
+            "level": "webhook",
+            "logs": json.dumps({
+                "type": "webhook",
+                "status": "blocked",
+                "latency_ms": 0,
+                "url": url,
+                "message": "Webhook not sent: the URL points to a private or internal address",
+                "payload": json.dumps(payload),
+            }),
+        }
+        asyncio.create_task(insert_log_entry_to_redis(workflow_run["id"], [blocked_entry]))
+        return {"status": "blocked", "message": "Webhook URL is not allowed"}
     latency_ms = (time.time() - start_time) * 1000
 
     # Prepare webhook log entry for Redis
