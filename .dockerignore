@@ -1,0 +1,9 @@
+# Keep secrets and local junk out of images (local `docker build` would otherwise copy .env).
+.env
+.env.*
+!.env.example
+.venv
+.git
+node_modules
+.claude
+tunnel_url.txt
