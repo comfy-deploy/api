@@ -78,6 +78,12 @@ InputsType = str
 input_types_list: List[InputsType] = list(custom_input_nodes.keys())
 
 
+def _str_or_empty(v: Any) -> str:
+    # In API-format workflows an input wired to another node is a link
+    # like ["191", 0] instead of a literal; it is not a usable string.
+    return v if isinstance(v, str) else ""
+
+
 def get_inputs_from_workflow_api(
     workflow_api: Optional[Union[str, Dict[str, Any]]],
 ) -> Optional[List[Dict[str, Any]]]:
@@ -95,7 +101,7 @@ def get_inputs_from_workflow_api(
         node_type = custom_input_nodes.get(value["class_type"])
 
         if node_type:
-            input_id = value["inputs"].get("input_id", "")
+            input_id = _str_or_empty(value["inputs"].get("input_id", ""))
             default_value = value["inputs"].get("default_value")
 
             input_data = {
@@ -106,8 +112,8 @@ def get_inputs_from_workflow_api(
                 "default_value": default_value,
                 "min_value": value["inputs"].get("min_value"),
                 "max_value": value["inputs"].get("max_value"),
-                "display_name": value["inputs"].get("display_name", ""),
-                "description": value["inputs"].get("description", ""),
+                "display_name": _str_or_empty(value["inputs"].get("display_name", "")),
+                "description": _str_or_empty(value["inputs"].get("description", "")),
             }
             
             # Handle options for ComfyUIDeployExternalEnum
