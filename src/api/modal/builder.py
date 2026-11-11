@@ -127,6 +127,7 @@ class GPUType(str, Enum):
     L4 = "L4"
     H200 = "H200"
     B200 = "B200"
+    RTX_PRO_6000 = "RTX-PRO-6000"
 
 
 class BuildMachineItem(BaseModel):
