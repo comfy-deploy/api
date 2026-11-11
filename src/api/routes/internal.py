@@ -404,17 +404,37 @@ def billable_end(event):
 _cross_tenant_warned: TTLCache = TTLCache(maxsize=5000, ttl=600)
 
 
+def _same_tenant(row_user_id, row_org_id, caller: dict) -> bool:
+    """Tenant rule of get_org_or_user_condition: org if the caller has one, else user."""
+    caller_org_id = caller.get("org_id")
+    if caller_org_id:
+        return row_org_id == caller_org_id
+    return row_user_id == caller.get("user_id") and row_org_id is None
+
+
+_machine_tenant_cache: TTLCache = TTLCache(maxsize=5000, ttl=600)
+
+
+async def _machine_tenant(machine_id, db: AsyncSession):
+    """(user_id, org_id) of a machine's owner, cached for 10 minutes; None if unknown."""
+    if machine_id is None:
+        return None
+    key = str(machine_id)
+    if key not in _machine_tenant_cache:
+        row = (
+            await db.execute(select(Machine.user_id, Machine.org_id).where(Machine.id == machine_id))
+        ).first()
+        _machine_tenant_cache[key] = (row[0], row[1]) if row else None
+    return _machine_tenant_cache[key]
+
+
 def _cross_tenant(flag: str, what: str, row_user_id, row_org_id, caller: dict, **ids) -> bool:
     """Tenant rule of get_org_or_user_condition, applied to an already-loaded row.
 
     Logs a WARNING on mismatch. Returns True (caller must reject) only when the
     `flag` env var is "true"; otherwise the request carries on unchanged (shadow mode).
     """
-    caller_org_id = caller.get("org_id")
-    if caller_org_id:
-        if row_org_id == caller_org_id:
-            return False
-    elif row_user_id == caller.get("user_id") and row_org_id is None:
+    if _same_tenant(row_user_id, row_org_id, caller):
         return False
 
     enforce = os.getenv(flag, "false").lower() == "true"
@@ -425,7 +445,7 @@ def _cross_tenant(flag: str, what: str, row_user_id, row_org_id, caller: dict, *
     _cross_tenant_warned[dedupe_key] = True
     context = {
         "caller_user_id": caller.get("user_id"),
-        "caller_org_id": caller_org_id,
+        "caller_org_id": caller.get("org_id"),
         "caller_token_type": caller.get("token_type"),
         "target_user_id": row_user_id,
         "target_org_id": row_org_id,
@@ -479,13 +499,23 @@ async def update_run(
 
             workflow_run = await get_cached_workflow_run(body.run_id, db)
 
-            # O(1) ownership check on the run already fetched above (no extra query).
-            if workflow_run is not None and _cross_tenant(
+            # Ownership check on the run already fetched above. Shared deployments: the run
+            # belongs to whoever triggered it, but the machine token belongs to the machine
+            # owner, who may update runs on its own machine (one cached lookup, mismatch only).
+            caller = getattr(request.state, "current_user", None) or {}
+            if workflow_run is not None and not _same_tenant(
+                workflow_run.user_id, workflow_run.org_id, caller
+            ):
+                owner = await _machine_tenant(workflow_run.machine_id, db)
+                allowed = owner is not None and _same_tenant(owner[0], owner[1], caller)
+            else:
+                allowed = True  # same tenant, or unknown run: nothing to compare
+            if not allowed and _cross_tenant(
                 "UPDATE_RUN_ENFORCE_OWNERSHIP",
                 "update-run",
                 workflow_run.user_id,
                 workflow_run.org_id,
-                getattr(request.state, "current_user", None) or {},
+                caller,
                 run_id=body.run_id,
                 machine_id=workflow_run.machine_id,
                 deployment_id=workflow_run.deployment_id,
