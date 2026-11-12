@@ -735,6 +735,9 @@ async def create_session(
                     .apply_org_check(request)
                     .where(GPUEvent.session_id.isnot(None))
                     .where(GPUEvent.end_time.is_(None))
+                    # No session outlives Modal's 24h cap; an older open one only lost its gpu_end
+                    # and must not lock the account forever.
+                    .where(GPUEvent.created_at > datetime.now(timezone.utc) - timedelta(hours=24))
                 )
             )
             .scalars()
@@ -1348,6 +1351,9 @@ async def create_dynamic_session(
                     .apply_org_check(request)
                     .where(GPUEvent.session_id.isnot(None))
                     .where(GPUEvent.end_time.is_(None))
+                    # No session outlives Modal's 24h cap; an older open one only lost its gpu_end
+                    # and must not lock the account forever.
+                    .where(GPUEvent.created_at > datetime.now(timezone.utc) - timedelta(hours=24))
                 )
             )
             .scalars()
