@@ -401,6 +401,37 @@ def billable_end(event):
     return billed if end.tzinfo else billed.replace(tzinfo=None)
 
 
+# A run container with no run activity for this long is gone (idle timeouts are minutes).
+STALE_RUN_QUIET = timedelta(hours=12)
+# Margin after a session's deadline before we treat its gpu_end as lost.
+STALE_SESSION_MARGIN = timedelta(hours=1)
+
+
+def stale_event_end(event, last_run_activity, idle_timeout_s, now):
+    """End time for an open GPU event whose gpu_end never arrived (container crashed or
+    its callback was lost), or None while it may still be running.
+
+    Bills only what we can show the customer, never more than a normal gpu_end would:
+    - session: its deadline, start + session_timeout + grace (the same cap billable_end
+      applies). No timeout recorded -> start (nothing billed).
+    - run container: its last run's end + the machine's idle timeout, i.e. the normal
+      "runs, then idle, then shut down" lifetime. It never ran anything -> start.
+    """
+    start = _as_utc(event.start_time)
+    now = _as_utc(now)
+    if event.session_id:
+        if not event.session_timeout:
+            return start if now - start > timedelta(hours=24) else None
+        deadline = start + timedelta(minutes=event.session_timeout) + SESSION_BILLING_GRACE
+        return deadline if now > deadline + STALE_SESSION_MARGIN else None
+    last = max(start, _as_utc(last_run_activity)) if last_run_activity else start
+    if now - last < STALE_RUN_QUIET:
+        return None
+    if not last_run_activity:
+        return start
+    return last + timedelta(seconds=idle_timeout_s or 0)
+
+
 _cross_tenant_warned: TTLCache = TTLCache(maxsize=5000, ttl=600)
 
 

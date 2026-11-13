@@ -1,21 +1,24 @@
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import func, select
+import modal
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
-from api.models import Deployment, Machine, WorkflowRun
+from api.models import Deployment, GPUEvent, Machine, WorkflowRun
 from api.routes.deployments import (
     DeploymentModel,
     _deactivate_deployment_internal,
     ENVIRONMENT_TTL_MAP
 )
 from api.routes.utils import check_admin_org
+from api.routes.internal import _as_utc, stale_event_end, track_gpu_concurrency_change
+from api.utils.autumn import send_autumn_usage_event
 
 logger = logging.getLogger(__name__)
 
@@ -257,3 +260,112 @@ async def admin_update_machine_plugin(
             request.state.current_user = admin
 
     return {"results": results}
+
+
+# Open GPU events older than this are never billed by the reconciler.
+STALE_GPU_EVENT_WINDOW = timedelta(days=7)
+
+
+@router.post("/gpu-events/close-stale")
+async def close_stale_gpu_events(
+    request: Request,
+    dry_run: bool = True,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    """Close GPU events whose gpu_end never arrived (container crash, lost callback) and bill
+    them the way a normal gpu_end would (see stale_event_end). Without this they stay open
+    forever: never charged, still counted in GPU concurrency, and a free-plan session blocks
+    every new session. Only events started in the last 7 days are touched. Run hourly."""
+    check_admin_org(request)
+    now = datetime.now(timezone.utc)
+    events = (
+        await db.execute(
+            select(GPUEvent)
+            .where(
+                GPUEvent.end_time.is_(None),
+                GPUEvent.start_time.isnot(None),
+                GPUEvent.start_time > now - STALE_GPU_EVENT_WINDOW,
+            )
+            .order_by(GPUEvent.start_time)
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    closed = []
+    for ev in events:
+        last_run, idle_timeout = None, 0
+        if not ev.session_id and ev.machine_id:
+            # machine_id + created_at hit idx_workflow_run_queue_position; gpu_event_id has no index.
+            last_run = (
+                await db.execute(
+                    select(func.max(func.coalesce(WorkflowRun.ended_at, WorkflowRun.updated_at))).where(
+                        WorkflowRun.machine_id == ev.machine_id,
+                        WorkflowRun.created_at >= _as_utc(ev.start_time) - timedelta(hours=1),
+                        WorkflowRun.gpu_event_id == str(ev.id),
+                    )
+                )
+            ).scalar()
+            idle_timeout = (
+                await db.execute(select(Machine.idle_timeout).where(Machine.id == ev.machine_id))
+            ).scalar() or 0
+        end = stale_event_end(ev, last_run, idle_timeout, now)
+        if end is None:
+            continue
+        start = _as_utc(ev.start_time)
+        customer_id = ev.org_id or ev.user_id
+        item = {
+            "event_id": str(ev.id),
+            "customer_id": customer_id,
+            "gpu": ev.gpu,
+            "kind": "session" if ev.session_id else "run",
+            "start_time": start.isoformat(),
+            "end_time": end.isoformat(),
+            "billed_seconds": (end - start).total_seconds(),
+        }
+        closed.append(item)
+        if dry_run:
+            continue
+
+        # A gpu_end that lands first wins; then we neither close nor bill it.
+        won = (
+            await db.execute(
+                update(GPUEvent)
+                .where(GPUEvent.id == ev.id, GPUEvent.end_time.is_(None))
+                .values(end_time=end)
+                .returning(GPUEvent.id)
+            )
+        ).scalar_one_or_none()
+        await db.commit()
+        if won is None:
+            item["skipped"] = "gpu_end arrived"
+            continue
+
+        # Same idempotency keys as gpu_end (end_<id>, <id>): a late gpu_end can't double count.
+        await track_gpu_concurrency_change(customer_id=customer_id, increment=-1, gpu_event_id=str(ev.id))
+        item["charged"] = await send_autumn_usage_event(
+            customer_id=customer_id,
+            gpu_type=ev.gpu,
+            start_time=start,
+            end_time=end,
+            environment=ev.environment,
+            idempotency_key=str(ev.id),
+        )
+        logger.warning(f"Closed stale GPU event {ev.id}: {item}")
+
+        # A session past its deadline may still be running on Modal (we'd keep paying for it).
+        if ev.session_id and ev.modal_function_id:
+            try:
+                if ev.modal_function_id.startswith("sb-"):
+                    await modal.Sandbox.from_id(ev.modal_function_id).terminate.aio()
+                else:
+                    await modal.functions.FunctionCall.from_id(ev.modal_function_id).cancel.aio()
+            except Exception as e:
+                logger.info(f"Stale session {ev.session_id}: Modal stop skipped ({e})")
+
+    return {
+        "dry_run": dry_run,
+        "closed": len(closed),
+        "billed_seconds": sum(i["billed_seconds"] for i in closed if not i.get("skipped")),
+        "events": closed,
+    }
