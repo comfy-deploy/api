@@ -559,7 +559,7 @@ async def get_latest_run(
 )
 async def get_versions(
     request: Request,
-    workflow_id: str,
+    workflow_id: UUID,
     search: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
@@ -624,7 +624,7 @@ async def get_versions(
 @router.get("/workflow/{workflow_id}", response_model=WorkflowModel)
 async def get_workflow(
     request: Request,
-    workflow_id: str,
+    workflow_id: UUID,
     db: AsyncSession = Depends(get_db),
     limit: int = 1,  # Default to 5 most recent versions
 ):
@@ -684,7 +684,7 @@ async def get_workflow(
 @router.get("/workflow/{workflow_id}/version/{version}", response_model=WorkflowVersionModel)
 async def get_workflow_version(
     request: Request,
-    workflow_id: str,
+    workflow_id: UUID,
     version: int,
     db: AsyncSession = Depends(get_db),
 ):
@@ -850,7 +850,7 @@ async def get_workflows_gallery(
 @router.get("/workflow/{workflow_id}/deployments")
 async def get_deployments(
     request: Request,
-    workflow_id: str,
+    workflow_id: UUID,
     db: AsyncSession = Depends(get_db),
 ) -> List[DeploymentModel]:
     deployments = await db.execute(
