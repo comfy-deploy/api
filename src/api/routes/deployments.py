@@ -380,6 +380,9 @@ async def create_deployment(
                     Deployment.environment == deployment_data.environment,
                 )
                 .apply_org_check(request)
+                # Duplicate rows may exist for a workflow + environment; update the newest
+                .order_by(Deployment.updated_at.desc())
+                .limit(1)
             )
 
         result = await db.execute(existing_deployment_query)
